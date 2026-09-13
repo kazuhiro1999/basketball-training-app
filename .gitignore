@@ -1,0 +1,16 @@
+# 実行時に生成されるもの
+delaycam/certs/
+delaycam/.browser-profile/
+recordings/
+data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# OS / エディタ
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

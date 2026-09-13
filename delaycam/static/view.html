@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DelayCam 表示</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; }
+  body.nocursor { cursor: none; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* ---- HUD ---- */
+  #delay { position: fixed; top: 2vh; right: 2vw; font: bold 9vh/1 ui-monospace, monospace; text-shadow: 0 0 8px #000, 0 0 3px #000; }
+  #delay.paused { color: #ff5; } #delay.slow { color: #5cf; }
+  #delay small { font-size: 3vh; opacity: .8; margin-left: .5vw; }
+  #status { position: fixed; left: 1vw; bottom: 1vh; font: 2vh/1.4 ui-monospace, monospace; opacity: .75; text-shadow: 0 0 4px #000; white-space: pre; }
+  #conn { position: fixed; top: 2vh; left: 2vw; font: 2.5vh system-ui; padding: .5vh 1vw; border-radius: 1vh; background: #c33; display: none; }
+
+  /* ---- 操作バー (マウス操作時のみ表示) ---- */
+  #bar { position: fixed; left: 50%; bottom: 2vh; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; max-width: 96vw; align-items: center; gap: .5vw; padding: .8vh 1vw; background: rgba(0,0,0,.65); border-radius: 1.2vh; transition: opacity .3s; }
+  #bar.hidden { opacity: 0; pointer-events: none; }
+  #bar button { font-size: 2.4vh; padding: 1vh 1.2vw; border: 0; border-radius: .8vh; background: #333; color: #fff; white-space: nowrap; }
+  #bar button:hover { background: #555; }
+  #bar button.on { background: #2a7; }
+  #bar .sep { width: 1px; height: 4vh; background: #666; margin: 0 .3vw; }
+  #bar button.play { font-size: 3.6vh; padding: .6vh 2vw; background: #2a7; }
+  #bar button.play:hover { background: #3c8; }
+  #bar button.play.paused { background: #d92; }
+  #bar button.play.paused:hover { background: #fa3; }
+  #bar button.quit { background: #733; } #bar button.quit:hover { background: #a44; }
+
+  /* ---- オーバーレイ (QR / ヘルプ / 終了) ---- */
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.72); cursor: default; }
+  .overlay[hidden] { display: none; }
+  .card { position: relative; background: #1a1a1a; border-radius: 2vh; padding: 4vh 5vw; text-align: center; max-width: 90vw; }
+  .card h2 { margin: 0 0 2vh; font-size: 4vh; }
+  .card .close { position: absolute; top: 1vh; right: 1.2vh; width: 5vh; height: 5vh; border: 0; border-radius: 50%; background: #333; color: #fff; font-size: 3vh; line-height: 1; }
+  .card .close:hover { background: #666; }
+  .card img { width: 42vmin; height: 42vmin; background: #fff; border-radius: 1vh; padding: 1vmin; }
+  .card .url { font: 3vh ui-monospace, monospace; margin: 2vh 0 1vh; color: #9cf; word-break: break-all; }
+  .card .hint { color: #aaa; font-size: 2.2vh; line-height: 1.5; }
+  .card .actions { display: flex; gap: 2vw; justify-content: center; margin-top: 3vh; }
+  .card .actions button { font-size: 3vh; padding: 1.5vh 3vw; border: 0; border-radius: 1vh; color: #fff; background: #444; }
+  .card .actions button.danger { background: #c33; }
+  #help table { font-size: 2.6vh; border-collapse: collapse; text-align: left; }
+  #help td { padding: .4vh 1.5vw; } #help td:first-child { color: #9cf; font-family: ui-monospace, monospace; white-space: nowrap; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="delay">--<small>s</small></div>
+<div id="status"></div>
+<div id="conn">サーバに接続中…</div>
+
+<div id="bar" class="hidden">
+  <button data-act="delay-" title="遅延 −1秒 (↓)">−1s</button>
+  <button data-act="delay+" title="遅延 +1秒 (↑)">+1s</button>
+  <span class="sep"></span>
+  <button data-act="back" title="5秒戻す (PageUp)">◀◀ 5s</button>
+  <button data-act="step-" title="1コマ戻す (←)">|◀</button>
+  <button data-act="pause" class="play" id="playbtn" title="一時停止 / 再生 (Space)">⏸</button>
+  <button data-act="step+" title="1コマ進む (→)">▶|</button>
+  <button data-act="fwd" title="5秒進める (PageDown)">5s ▶▶</button>
+  <span class="sep"></span>
+  <button data-act="slow" id="slowbtn" title="スロー 0.5× (S)">0.5×</button>
+  <button data-act="live" title="設定遅延に復帰 (L)">LIVE</button>
+  <span class="sep"></span>
+  <button data-act="mirror" id="mirrorbtn" title="左右反転 (M)">鏡</button>
+  <button data-act="rotate" id="rotatebtn" title="表示を90°回転 (R)">回転</button>
+  <button data-act="qr" title="QR表示 (Q)">QR</button>
+  <button data-act="help" title="ヘルプ (H)">?</button>
+  <button data-act="fs" title="全画面 (F)">⛶</button>
+  <span class="sep"></span>
+  <button data-act="quit" class="quit" title="終了 (Esc)">終了</button>
+</div>
+
+<div id="qr" class="overlay" hidden>
+  <div class="card">
+    <button class="close" data-close="qr" title="閉じる">×</button>
+    <h2>スマホでこのQRを読み取ってください</h2>
+    <img id="qrimg" alt="QR" src="">
+    <div class="url" id="camurl">…</div>
+    <div class="hint">証明書の警告が出たら「詳細設定」→「…にアクセスする」<br>ページが開いたら「開始」を押すと、この画面に映像が出ます</div>
+  </div>
+</div>
+
+<div id="help" class="overlay" hidden>
+  <div class="card">
+    <button class="close" data-close="help" title="閉じる">×</button>
+    <h2>操作</h2>
+    <table>
+      <tr><td>↑ / ↓</td><td>遅延を +1秒 / −1秒</td></tr>
+      <tr><td>Space</td><td>一時停止 / 再生</td></tr>
+      <tr><td>← / →</td><td>1コマ戻す / 進める（停止中）</td></tr>
+      <tr><td>PageUp / PageDown</td><td>5秒戻す / 進める</td></tr>
+      <tr><td>S</td><td>スロー再生 0.5× の切替</td></tr>
+      <tr><td>L</td><td>設定した遅延秒数に復帰して再生</td></tr>
+      <tr><td>M</td><td>左右反転（鏡）</td></tr>
+      <tr><td>R</td><td>表示を90°回転（縦置きディスプレイ用）</td></tr>
+      <tr><td>F</td><td>全画面</td></tr>
+      <tr><td>Q</td><td>QRコード表示</td></tr>
+      <tr><td>H</td><td>このヘルプ</td></tr>
+      <tr><td>Esc</td><td>ウィンドウを閉じる / 終了</td></tr>
+    </table>
+    <div class="hint" style="margin-top:2vh">URL に ?delay=10 を付けると初期遅延を変更できます。<br>表示の遅延秒数は「スマホ→PC の最短伝送時間」を除いた値です（実際は +0.1〜0.3 秒程度）。</div>
+  </div>
+</div>
+
+<div id="quit" class="overlay" hidden>
+  <div class="card">
+    <h2>DelayCam を終了しますか？</h2>
+    <div class="hint">この画面を閉じ、サーバも停止します。<br>スマホ側は「停止」を押してください。</div>
+    <div class="actions">
+      <button data-close="quit">キャンセル</button>
+      <button class="danger" id="quitok">終了する (Enter)</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/view.js"></script>
+</body>
+</html>

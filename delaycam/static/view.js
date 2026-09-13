@@ -26,6 +26,8 @@ const ui = {
   delay: $('delay'), status: $('status'), conn: $('conn'), bar: $('bar'),
   qr: $('qr'), qrimg: $('qrimg'), camurl: $('camurl'), help: $('help'), quit: $('quit'),
   playbtn: $('playbtn'), slowbtn: $('slowbtn'), mirrorbtn: $('mirrorbtn'), rotatebtn: $('rotatebtn'),
+  rec: $('rec'), rectime: $('rectime'), recsize: $('recsize'), recbtn: $('recbtn'), reccard: $('reccard'),
+  rectitle: $('rectitle'), recform: $('recform'), recstat: $('recstat'), recok: $('recok'), toast: $('toast'),
 };
 
 let targetDelay = clamp(parseFloat(params.get('delay')) || 15, 0.5, MAX_TARGET);
@@ -41,6 +43,7 @@ let quitting = false;
 let decoder = null, curSession = null, needKey = true, suppressBeforeTs = -1, lastFrame = null;
 let inSession = null;     // 受信中のセッション
 let camConnected = false, camUrl = '', ws = null;
+let recording = { active: false };   // サーバから届く録画状態
 const stats = { rxFrames: 0, rxBytes: 0, decoded: 0, prevRx: 0, prevRxBytes: 0, prevDecoded: 0, rxFps: 0, rxMbps: 0, decFps: 0 };
 
 try {
@@ -74,7 +77,10 @@ function onText(m) {
     if (m.cam_url) camUrl = m.cam_url;
     if (!camConnected) inSession = null;
     if (camConnected && !was) qrDismissed = false;   // 次に切れた時はまた出す
+    if (m.recording) { recording = m.recording; updateRecUi(); }
     updateOverlay();
+  } else if (m.type === 'toast') {
+    toast(m.text);
   } else if (m.type === 'config') {
     if (inSession && inSession.id === m.session) {   // 同じセッションの再送 (viewer 再接続時)
       buffer.push({ kind: 'gap', base: performance.now() });
@@ -268,17 +274,41 @@ const actions = {
   help: () => { ui.help.hidden = !ui.help.hidden; },
   fs: () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); },
   quit: () => { ui.quit.hidden = false; },
+  rec: () => { openRecCard(); },
 };
+
+// 画面操作をサーバに送る (録画中は録画フォルダの events.jsonl、常に logs/ にも残る)。
+// その時点で画面に出ていたフレームのタイムスタンプを添えるので、後から映像と突き合わせられる
+function sendEvent(action, extra = {}) {
+  if (!ws || ws.readyState !== 1) return;
+  const now = performance.now();
+  ws.send(JSON.stringify({
+    type: 'event', action,
+    display_ts_us: lastFrame ? lastFrame.timestamp : null,
+    session: curSession ? curSession.id : null,
+    delay_target: targetDelay,
+    delay_effective: pos === null ? null : Math.round(now - pos) / 1000,
+    rate,
+    ...extra,
+  }));
+}
+const LOGGED_ACTIONS = ['delay+', 'delay-', 'pause', 'slow', 'live', 'step-', 'step+', 'back', 'fwd', 'mirror', 'rotate'];
+function runAction(act, source) {
+  if (!actions[act]) return;
+  const before = { rate, targetDelay };
+  actions[act]();
+  if (LOGGED_ACTIONS.includes(act)) sendEvent(act, { source, rate_before: before.rate, delay_before: before.targetDelay });
+}
 const keymap = {
   ArrowUp: 'delay+', ArrowDown: 'delay-', '+': 'delay+', '-': 'delay-', ' ': 'pause',
   ArrowLeft: 'step-', ArrowRight: 'step+', PageUp: 'back', PageDown: 'fwd',
   s: 'slow', l: 'live', m: 'mirror', r: 'rotate', q: 'qr', h: 'help', f: 'fs',
 };
 
-function anyOverlayOpen() { return !ui.qr.hidden || !ui.help.hidden || !ui.quit.hidden; }
+function anyOverlayOpen() { return !ui.qr.hidden || !ui.help.hidden || !ui.quit.hidden || !ui.reccard.hidden; }
 function closeOverlays() {
   if (!ui.qr.hidden) { qrForced = false; qrDismissed = true; }
-  ui.help.hidden = true; ui.quit.hidden = true;
+  ui.help.hidden = true; ui.quit.hidden = true; ui.reccard.hidden = true;
   updateOverlay();
 }
 
@@ -303,17 +333,81 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (!ui.quit.hidden) { if (e.key === 'Enter') { e.preventDefault(); doQuit(); } return; }
+  if (!ui.reccard.hidden) return;   // 入力フォーム中はショートカットを無効に
   const act = keymap[e.key.length === 1 ? e.key.toLowerCase() : e.key];
   if (!act) return;
   e.preventDefault();
-  actions[act]();
+  runAction(act, 'key');
   updateHud();
 });
 ui.bar.addEventListener('click', (e) => {
   const b = e.target.closest('button');
-  if (b && actions[b.dataset.act]) { actions[b.dataset.act](); updateHud(); }
+  if (b && actions[b.dataset.act]) { runAction(b.dataset.act, 'button'); updateHud(); }
 });
 $('quitok').addEventListener('click', doQuit);
+
+// ---------------------------------------------------------------- 録画
+
+const SETUP_KEY = 'delaycam.setup';
+function readSetup() {
+  const f = new FormData(ui.recform);
+  const num = (v) => (v === '' || v === null ? null : Number(v));
+  return { view: f.get('view'), height_m: num(f.get('height_m')), distance_m: num(f.get('distance_m')), drill: f.get('drill'), note: f.get('note') || '' };
+}
+function loadSetup() {
+  try {
+    const p = JSON.parse(localStorage.getItem(SETUP_KEY) || 'null');
+    if (!p) return;
+    for (const [k, v] of Object.entries(p)) { const el = ui.recform.elements[k]; if (el && v !== null && v !== undefined) el.value = v; }
+  } catch { /* ignore */ }
+}
+function recDuration() {
+  if (!recording.active || !recording.started_unix_ms) return '00:00:00';
+  const s = Math.max(0, Math.floor((Date.now() - recording.started_unix_ms) / 1000));
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+}
+function openRecCard() {
+  const on = recording.active;
+  ui.rectitle.textContent = on ? '録画を停止しますか？' : '録画を開始';
+  ui.recform.style.display = on ? 'none' : '';
+  ui.recok.textContent = on ? '■ 録画停止' : '● 録画開始';
+  ui.recstat.textContent = on
+    ? `${recDuration()}  ${(recording.bytes / 1e9).toFixed(2)} GB  ${recording.frames} フレーム  →  ${recording.dir}`
+    : `保存先: ${recording.rec_dir || '(サーバ既定)'}   空き ${recording.free_gb ?? '?'} GB`;
+  $('preroll').textContent = recording.preroll_sec ?? 30;
+  ui.reccard.hidden = false;
+  if (!on) ui.recform.elements.view.focus();
+}
+function updateRecUi() {
+  ui.rec.style.display = recording.active ? 'block' : 'none';
+  ui.rectime.textContent = recDuration();
+  ui.recsize.textContent = recording.active ? `${(recording.bytes / 1e9).toFixed(2)}GB` : '';
+  ui.recbtn.classList.toggle('on', recording.active);
+  ui.recbtn.textContent = recording.active ? '■ REC 停止' : '● REC';
+}
+ui.recok.addEventListener('click', () => {
+  if (!ws || ws.readyState !== 1) { toast('サーバに接続していません'); return; }
+  if (recording.active) {
+    ws.send(JSON.stringify({ type: 'rec', action: 'stop' }));
+  } else {
+    const setup = readSetup();
+    try { localStorage.setItem(SETUP_KEY, JSON.stringify(setup)); } catch { /* ignore */ }
+    ws.send(JSON.stringify({
+      type: 'rec', action: 'start', setup, delay: targetDelay,
+      viewer: { ua: navigator.userAgent, screen: `${screen.width}x${screen.height}`, dpr: devicePixelRatio, mirror, rotation },
+    }));
+  }
+  ui.reccard.hidden = true;
+});
+loadSetup();
+
+let toastTimer = 0;
+function toast(text, ms = 3000) {
+  ui.toast.textContent = text; ui.toast.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { ui.toast.style.display = 'none'; }, ms);
+}
 // カードの × ボタン / キャンセル、またはカードの外側クリックで閉じる
 document.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => {
   if (b.dataset.close === 'qr') { qrForced = false; qrDismissed = true; updateOverlay(); }
@@ -406,7 +500,10 @@ setInterval(() => {
   stats.decFps = stats.decoded - stats.prevDecoded; stats.prevDecoded = stats.decoded;
   updateHud();
   updateOverlay();
+  updateRecUi();
+  if (++statsTick % 5 === 0) sendEvent('viewer_stats', { rx_fps: stats.rxFps, dec_fps: stats.decFps, buffered_ahead: bufferedAhead() });
 }, 1000);
+let statsTick = 0;
 
 // ---------------------------------------------------------------- 起動
 
@@ -414,7 +511,7 @@ if (!('VideoDecoder' in window)) {
   document.body.innerHTML = '<div style="padding:4vh;font-size:4vh">このブラウザは WebCodecs 非対応です。Chrome または Edge で開いてください。</div>';
 } else {
   resize();
-  fetch('/info.json').then((r) => r.json()).then((i) => { camUrl = i.cam_url; camConnected = i.cam_connected; updateOverlay(); }).catch(() => {});
+  fetch('/info.json').then((r) => r.json()).then((i) => { camUrl = i.cam_url; camConnected = i.cam_connected; if (i.recording) { recording = i.recording; updateRecUi(); } updateOverlay(); }).catch(() => {});
   connect();
   updateHud();
   requestAnimationFrame(tick);

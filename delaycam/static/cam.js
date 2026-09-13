@@ -25,6 +25,7 @@ let stream = null, reader = null, testRaf = 0;
 let encoder = null, encCfg = null, session = null;
 let frameCount = 0, forceKey = true, skipUntilKey = false, reconfiguring = false;
 let wakeLock = null;
+let recOnPc = false;
 const stats = { frames: 0, bytes: 0, dropped: 0, prevFrames: 0, prevBytes: 0 };
 
 // ---------------------------------------------------------------- UI 補助
@@ -133,9 +134,16 @@ async function configureEncoder(w, h) {
   });
   encoder.configure(encCfg);
   frameCount = 0; forceKey = true; skipUntilKey = false;
+  const track = stream && stream.getVideoTracks()[0];
+  const st = track ? track.getSettings() : {};
   session = {
     id: Math.random().toString(36).slice(2, 10),
     codec: encCfg.codec, width: w, height: h, fps, bitrate, test: els.test.checked,
+    // 録画のメタデータ用 (解析時に端末・向き・実際のカメラ設定が分かるように)
+    ua: navigator.userAgent,
+    orientation: (screen.orientation && screen.orientation.type) || (innerHeight > innerWidth ? 'portrait' : 'landscape'),
+    camera: track && !els.test.checked ? track.label : null,
+    settings: { width: st.width, height: st.height, frameRate: st.frameRate, facingMode: st.facingMode, aspectRatio: st.aspectRatio },
   };
   sendConfig();
   logLine(`encoder: ${encCfg.codec} ${w}x${h}@${fps} ${bitrate / 1e6}Mbps (${encCfg.hardwareAcceleration})`);
@@ -213,6 +221,13 @@ function connectWs() {
   ws = new WebSocket(wsUrl());
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => { wsOpen = true; setStatus('送信中', 'ok'); logLine('接続'); sendConfig(); forceKey = true; };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== 'string') return;
+    try {
+      const m = JSON.parse(ev.data);
+      if (m.type === 'status') { recOnPc = !!(m.recording && m.recording.active); if (running) setStatus(recOnPc ? '送信中 ● PC側で録画中' : '送信中', 'ok'); }
+    } catch { /* ignore */ }
+  };
   ws.onclose = (ev) => {
     wsOpen = false;
     if (!running) return;

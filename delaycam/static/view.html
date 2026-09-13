@@ -17,6 +17,10 @@
   #delay small { font-size: 3vh; opacity: .8; margin-left: .5vw; }
   #status { position: fixed; left: 1vw; bottom: 1vh; font: 2vh/1.4 ui-monospace, monospace; opacity: .75; text-shadow: 0 0 4px #000; white-space: pre; }
   #conn { position: fixed; top: 2vh; left: 2vw; font: 2.5vh system-ui; padding: .5vh 1vw; border-radius: 1vh; background: #c33; display: none; }
+  #rec { position: fixed; top: 2vh; left: 2vw; font: bold 3.2vh/1 ui-monospace, monospace; color: #f44; text-shadow: 0 0 6px #000; display: none; }
+  #rec .dot { display: inline-block; width: 2.2vh; height: 2.2vh; border-radius: 50%; background: #f22; margin-right: .8vw; vertical-align: -.2vh; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  #toast { position: fixed; left: 50%; bottom: 12vh; transform: translateX(-50%); font-size: 2.6vh; padding: 1vh 2vw; border-radius: 1vh; background: rgba(40,40,40,.9); border: 1px solid #666; display: none; }
 
   /* ---- 操作バー (マウス操作時のみ表示) ---- */
   #bar { position: fixed; left: 50%; bottom: 2vh; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; max-width: 96vw; align-items: center; gap: .5vw; padding: .8vh 1vw; background: rgba(0,0,0,.65); border-radius: 1.2vh; transition: opacity .3s; }
@@ -30,6 +34,12 @@
   #bar button.play.paused { background: #d92; }
   #bar button.play.paused:hover { background: #fa3; }
   #bar button.quit { background: #733; } #bar button.quit:hover { background: #a44; }
+  #bar button.rec { border: 2px solid #c33; background: #222; color: #f66; }
+  #bar button.rec.on { background: #c33; color: #fff; }
+  .card form { text-align: left; font-size: 2.4vh; display: grid; grid-template-columns: auto 1fr; gap: 1.2vh 1.5vw; align-items: center; margin-top: 1vh; }
+  .card form label { color: #aaa; white-space: nowrap; }
+  .card form select, .card form input { font-size: 2.4vh; padding: .8vh 1vw; background: #222; color: #eee; border: 1px solid #555; border-radius: .6vh; width: 100%; }
+  .card .stat { font: 2.4vh ui-monospace, monospace; color: #9cf; margin-top: 1.5vh; }
 
   /* ---- オーバーレイ (QR / ヘルプ / 終了) ---- */
   .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.72); cursor: default; }
@@ -54,6 +64,8 @@
 <div id="delay">--<small>s</small></div>
 <div id="status"></div>
 <div id="conn">サーバに接続中…</div>
+<div id="rec"><span class="dot"></span>REC <span id="rectime">00:00:00</span> <span id="recsize"></span></div>
+<div id="toast"></div>
 
 <div id="bar" class="hidden">
   <button data-act="delay-" title="遅延 −1秒 (↓)">−1s</button>
@@ -74,6 +86,7 @@
   <button data-act="help" title="ヘルプ (H)">?</button>
   <button data-act="fs" title="全画面 (F)">⛶</button>
   <span class="sep"></span>
+  <button data-act="rec" class="rec" id="recbtn" title="録画の開始 / 停止">● REC</button>
   <button data-act="quit" class="quit" title="終了 (Esc)">終了</button>
 </div>
 
@@ -103,9 +116,43 @@
       <tr><td>F</td><td>全画面</td></tr>
       <tr><td>Q</td><td>QRコード表示</td></tr>
       <tr><td>H</td><td>このヘルプ</td></tr>
+      <tr><td>REC ボタン</td><td>録画の開始 / 停止（この PC の画面からのみ）</td></tr>
       <tr><td>Esc</td><td>ウィンドウを閉じる / 終了</td></tr>
     </table>
     <div class="hint" style="margin-top:2vh">URL に ?delay=10 を付けると初期遅延を変更できます。<br>表示の遅延秒数は「スマホ→PC の最短伝送時間」を除いた値です（実際は +0.1〜0.3 秒程度）。</div>
+  </div>
+</div>
+
+<div id="reccard" class="overlay" hidden>
+  <div class="card">
+    <button class="close" data-close="reccard" title="閉じる">×</button>
+    <h2 id="rectitle">録画を開始</h2>
+    <form id="recform" onsubmit="return false">
+      <label>視点</label>
+      <select name="view">
+        <option value="side">真横</option>
+        <option value="diag45">斜め 45°</option>
+        <option value="front">正面</option>
+        <option value="other">その他</option>
+      </select>
+      <label>カメラの高さ (m)</label><input name="height_m" type="number" step="0.1" min="0" value="1.0">
+      <label>被写体までの距離 (m)</label><input name="distance_m" type="number" step="0.5" min="0" placeholder="任意">
+      <label>練習内容</label>
+      <select name="drill">
+        <option value="free_throw">フリースロー</option>
+        <option value="jump_shot">ジャンプシュート</option>
+        <option value="spot_shooting">スポットシューティング</option>
+        <option value="dribble">ドリブル</option>
+        <option value="other">その他</option>
+      </select>
+      <label>メモ</label><input name="note" type="text" placeholder="任意（場所、人数など）">
+    </form>
+    <div class="stat" id="recstat"></div>
+    <div class="hint" style="margin-top:1.5vh">映像は再エンコードせずにこの PC に保存されます（4Mbps で約 1.8GB/時）。<br>REC を押した時点から <span id="preroll">30</span> 秒前の映像も含まれます。停止・終了時に自動で確定します。</div>
+    <div class="actions">
+      <button data-close="reccard">キャンセル</button>
+      <button class="danger" id="recok">● 録画開始</button>
+    </div>
   </div>
 </div>
 

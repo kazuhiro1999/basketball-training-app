@@ -3,7 +3,7 @@
   uv run analyze ../delaycam/recordings/2026-09-13_17-40-12 --pose rtmo --size s --ball yolo --overlay
   uv run analyze sample.mp4 --pose rtmpose --size m --tracker bytetrack --max-frames 300
 
-出力 (既定: <入力>/analysis/<pose>-<size>/ 、動画ファイルなら <動画名>_analysis/<pose>-<size>/):
+出力 (既定: <入力>/analysis/<pose>-<size>_<tracker>/ 、動画ファイルなら <動画名>_analysis/<pose>-<size>_<tracker>/):
   pose.jsonl          1 行 1 フレーム: {"i","seg","n","ts_us","persons":[{id,bbox,score,kp:[[x,y,c]x17]}],"ball":{...}|null}
   analysis_meta.json  使ったモデル・パラメータ・処理時間
   overlay.mp4         --overlay 指定時
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
 
     set_threads(args.threads or None)
     src = FrameSource(args.input)
-    tag = f"{args.pose}-{args.size}" if args.size else args.pose
+    tag = (f"{args.pose}-{args.size}" if args.size else args.pose) + f"_{args.tracker}"
     if args.out:
         out_dir = Path(args.out)
     elif src.is_recording:
@@ -70,7 +70,10 @@ def main(argv: list[str] | None = None) -> None:
     t0 = time.perf_counter()
     pose = None if args.pose == "none" else create_pose_backend(args.pose, size=args.size, det_thr=args.det_thr, kp_thr=args.kp_thr)
     if pose:
-        tag = f"{pose.name}-{pose.size}"
+        tag = f"{pose.name}-{pose.size}_{args.tracker}"
+        if not args.out:
+            out_dir = out_dir.parent / tag
+            out_dir.mkdir(parents=True, exist_ok=True)
     ball_det = BallDetector(size=args.ball_size, conf_thr=args.ball_thr) if args.ball != "none" else None
     ball_trk = BallTracker() if ball_det else None
     tracker = create_tracker(args.tracker, fps=src.fps)
@@ -115,7 +118,7 @@ def main(argv: list[str] | None = None) -> None:
             t1 = time.perf_counter()
             persons = pose.infer(fr.image) if pose else []
             t2 = time.perf_counter()
-            res.persons = tracker.update(persons)
+            res.persons = tracker.update(persons, fr.image)
             t3 = time.perf_counter()
             if ball_det:
                 res.ball = ball_trk.update(detect_ball(ball_det, fr.image, res.persons, args.ball_roi == "persons"))

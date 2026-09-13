@@ -19,6 +19,7 @@ trackers = ["trackers>=2.0"]
 [project.scripts]
 analyze = "hoop_analyzer.run:main"
 bench = "hoop_analyzer.bench:main"
+trackstats = "hoop_analyzer.trackstats:main"
 
 [build-system]
 requires = ["hatchling"]

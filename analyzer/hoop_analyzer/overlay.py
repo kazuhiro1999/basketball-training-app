@@ -55,15 +55,31 @@ def draw_frame(img: np.ndarray, persons: list[Person], ball: Ball | None, text: 
 
 
 class OverlayWriter:
-    def __init__(self, path: str | Path, fps: float, size: tuple[int, int]) -> None:
+    """確認用動画。PyAV (libx264, yuv420p) で書くのでブラウザや Slack でもそのまま再生できる。"""
+
+    def __init__(self, path: str | Path, fps: float, size: tuple[int, int], crf: int = 23) -> None:
+        import av
+
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.writer = cv2.VideoWriter(str(self.path), cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
-        if not self.writer.isOpened():
-            raise RuntimeError(f"動画を開けません: {self.path}")
+        w, h = size
+        self.container = av.open(str(self.path), mode="w")
+        self.stream = self.container.add_stream("libx264", rate=max(1, int(round(fps))))
+        self.stream.width, self.stream.height = w - w % 2, h - h % 2     # yuv420p は偶数サイズ
+        self.stream.pix_fmt = "yuv420p"
+        self.stream.options = {"crf": str(crf), "preset": "veryfast"}
+        self._size = (self.stream.width, self.stream.height)
 
     def write(self, img: np.ndarray) -> None:
-        self.writer.write(img)
+        import av
+
+        if (img.shape[1], img.shape[0]) != self._size:
+            img = img[: self._size[1], : self._size[0]]
+        frame = av.VideoFrame.from_ndarray(img, format="bgr24")
+        for pkt in self.stream.encode(frame):
+            self.container.mux(pkt)
 
     def close(self) -> None:
-        self.writer.release()
+        for pkt in self.stream.encode():
+            self.container.mux(pkt)
+        self.container.close()

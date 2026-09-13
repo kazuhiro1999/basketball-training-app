@@ -10,7 +10,7 @@ torch / TensorFlow はランタイムに不要。GPU や環境変数には触ら
 | `rtmpose` | top-down | YOLOX 人検出 + RTMPose (rtmlib) | s / **m** / x | 精度が高い。人数に比例して遅くなる（観客が写ると重い） |
 | `yolo` | one-stage | YOLO11-pose (Ultralytics → ONNX) | **n** / s / m | 最も手軽。ボール検出と同じ枠組み |
 
-トラッカー（`--tracker`）: `simple`（IoU + ハンガリアン、依存なし、既定）/ `bytetrack` / `ocsort` / `sort`（roboflow `trackers`）。
+トラッカー（`--tracker`）: `simple`（IoU + キーポイント一致 + 服の色で対応付け、依存なし、既定）/ `bytetrack` / `ocsort` / `sort`（roboflow `trackers`）。
 ボール（`--ball yolo`）: YOLO11 の COCO `sports ball` クラス + 等速外挿の簡易トラッカー。
 
 ## セットアップ
@@ -37,6 +37,9 @@ uv run analyze clip.mp4 --pose yolo --size n --max-frames 300 --stride 2   # 動
 # 速度比較 (ライブ表示に載せる軽量モデル選び)
 uv run bench clip.mp4 --frames 100
 uv run bench clip.mp4 --configs rtmo:t rtmo:s yolo:n
+
+# ID の安定性の目安 (ID 数、短寿命トラック数、オクルージョン後の再付与疑い)
+uv run trackstats clip_analysis
 ```
 
 主なオプション: `--det-thr`（人物検出しきい値、既定 0.5）、`--kp-thr`（キーポイント信頼度、描画/bbox 用）、
@@ -46,10 +49,10 @@ uv run bench clip.mp4 --configs rtmo:t rtmo:s yolo:n
 ## 出力
 
 ```
-analysis/rtmo-s/
+analysis/rtmo-s_simple/            (<pose>-<size>_<tracker>)
   pose.jsonl          1 行 1 フレーム
   analysis_meta.json  モデル・パラメータ・処理時間・平均人数・ボール検出率
-  overlay.mp4         --overlay 時。骨格 + ID + ボールを描いた確認用動画
+  overlay.mp4         --overlay 時。骨格 + ID + ボールを描いた確認用動画 (H.264, ブラウザでも再生可)
 ```
 
 `pose.jsonl` の 1 行:
@@ -74,7 +77,8 @@ hoop_analyzer/
     __init__.py        REGISTRY に登録すれば --pose で選べる
     rtmpose.py rtmo.py yolo_pose.py
   ball.py              BallDetector (YOLO ONNX) + roi_around_persons + BallTracker
-  tracking.py          SimpleTracker / RoboflowTracker (bytetrack, ocsort, sort)
+  tracking.py          SimpleTracker (IoU + キーポイント一致 + 服の色ヒストグラム) / RoboflowTracker (bytetrack, ocsort, sort)
+  trackstats.py        ID 安定性の集計
   yolo_onnx.py         Ultralytics ONNX の letterbox / NMS / 座標復元 (torch 不要)
   ort_config.py        ONNX Runtime のスレッド設定 (下記)
   video.py             録画フォルダ / 動画ファイルの共通リーダ (PyAV)

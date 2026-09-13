@@ -24,3 +24,6 @@ analyzer/models/
 *.pt
 *_analysis/
 analysis/
+
+# 配布用 zip
+dist/

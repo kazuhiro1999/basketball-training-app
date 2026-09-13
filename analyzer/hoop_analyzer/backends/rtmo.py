@@ -34,7 +34,7 @@ class RTMOBackend(PoseBackend):
                           backend="onnxruntime", device="cpu")
         retune_rtmlib(self.model, _BASE + fname)
 
-    def infer(self, frame_bgr: np.ndarray) -> list[Person]:
+    def infer(self, frame_bgr: np.ndarray, ts_ms: float | None = None) -> list[Person]:
         kps, scs = self.model(frame_bgr)
         persons = []
         for kp, sc in zip(kps, scs):

@@ -7,6 +7,8 @@ REGISTRY: dict[str, str] = {
     "rtmpose": "hoop_analyzer.backends.rtmpose:RTMPoseBackend",   # top-down: YOLOX 人検出 → RTMPose
     "rtmo": "hoop_analyzer.backends.rtmo:RTMOBackend",            # one-stage
     "yolo": "hoop_analyzer.backends.yolo_pose:YoloPoseBackend",   # YOLO11-pose (ONNX)
+    "mediapipe": "hoop_analyzer.backends.mediapipe_pose:MediaPipePoseBackend",   # MediaPipe Pose Landmarker (検証用, 1人向け)
+    "holistic": "hoop_analyzer.backends.mediapipe_pose:HolisticBackend",         # MediaPipe Holistic (1人, 手も出る)
 }
 
 

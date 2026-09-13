@@ -25,8 +25,9 @@ class PoseBackend(ABC):
         self.kp_thr = kp_thr
 
     @abstractmethod
-    def infer(self, frame_bgr: np.ndarray) -> list[Person]:
-        """1 フレーム (BGR, HxWx3) から人物リストを返す。座標は元画像のピクセル。"""
+    def infer(self, frame_bgr: np.ndarray, ts_ms: float | None = None) -> list[Person]:
+        """1 フレーム (BGR, HxWx3) から人物リストを返す。座標は元画像のピクセル。
+        ts_ms はフレームの時刻 (時間方向の平滑化をするバックエンド用。不要なら無視してよい)。"""
 
     def describe(self) -> dict:
         return {"backend": self.name, "size": self.size, "det_thr": self.det_thr, "kp_thr": self.kp_thr}

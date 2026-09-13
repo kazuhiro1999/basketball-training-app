@@ -31,7 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="骨格推定 + ボール検出 + トラッキング")
     p.add_argument("input", help="録画フォルダ (meta.json のある場所) または動画ファイル")
     p.add_argument("--pose", default="rtmo", choices=[*REGISTRY, "none"], help="姿勢推定バックエンド (既定 rtmo)")
-    p.add_argument("--size", default=None, help="モデルサイズ (rtmpose: s/m/x, rtmo: t/s/m/l, yolo: n/s/m)")
+    p.add_argument("--size", default=None, help="モデルサイズ (rtmpose: s/m/x, rtmo: t/s/m/l, yolo: n/s/m, mediapipe: lite/full/heavy)")
+    p.add_argument("--num-poses", type=int, default=1, help="mediapipe のみ: 同時に推定する人数の上限 (既定 1)")
+    p.add_argument("--mp-roi", default="auto", choices=["auto", "none"],
+                   help="mediapipe/holistic: auto=YOLO で一番大きく写る人を切り出してから推定 (既定) / none=全画面")
     p.add_argument("--det-thr", type=float, default=0.5, help="人物検出のしきい値")
     p.add_argument("--kp-thr", type=float, default=0.3, help="キーポイント信頼度のしきい値 (描画/bbox 用)")
     p.add_argument("--ball", default="yolo", choices=["yolo", "none"], help="ボール検出 (既定 yolo)")
@@ -68,7 +71,12 @@ def main(argv: list[str] | None = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.perf_counter()
-    pose = None if args.pose == "none" else create_pose_backend(args.pose, size=args.size, det_thr=args.det_thr, kp_thr=args.kp_thr)
+    extra_kw = {}
+    if args.pose == "mediapipe":
+        extra_kw = {"num_poses": args.num_poses, "roi": args.mp_roi}
+    elif args.pose == "holistic":
+        extra_kw = {"roi": args.mp_roi}
+    pose = None if args.pose == "none" else create_pose_backend(args.pose, size=args.size, det_thr=args.det_thr, kp_thr=args.kp_thr, **extra_kw)
     if pose:
         tag = f"{pose.name}-{pose.size}_{args.tracker}"
         if not args.out:
@@ -116,7 +124,7 @@ def main(argv: list[str] | None = None) -> None:
             res = FrameResult(index=fr.index, seg=fr.seg, n=fr.n, ts_us=fr.ts_us)
 
             t1 = time.perf_counter()
-            persons = pose.infer(fr.image) if pose else []
+            persons = pose.infer(fr.image, ts_ms=fr.ts_us / 1000) if pose else []
             t2 = time.perf_counter()
             res.persons = tracker.update(persons, fr.image)
             t3 = time.perf_counter()

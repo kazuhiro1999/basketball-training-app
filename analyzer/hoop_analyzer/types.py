@@ -27,15 +27,19 @@ class Person:
     keypoints: np.ndarray            # (17, 2) x, y  元画像のピクセル座標
     kp_scores: np.ndarray            # (17,)
     track_id: int | None = None
+    extra: dict | None = None        # バックエンド固有の追加データ (MediaPipe の 33 点・3D・手など)
 
     def to_json(self, ndigits: int = 1) -> dict:
         kp = np.concatenate([self.keypoints, self.kp_scores[:, None]], axis=1)
-        return {
+        d = {
             "id": self.track_id,
             "bbox": [round(float(v), ndigits) for v in self.bbox],
             "score": round(float(self.score), 3),
             "kp": [[round(float(x), ndigits), round(float(y), ndigits), round(float(c), 3)] for x, y, c in kp],
         }
+        if self.extra:
+            d.update(self.extra)
+        return d
 
 
 @dataclass

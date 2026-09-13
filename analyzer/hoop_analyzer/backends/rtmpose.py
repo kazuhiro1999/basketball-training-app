@@ -34,16 +34,28 @@ class RTMPoseBackend(PoseBackend):
         retune_rtmlib(self.det, cfg["det"])
         retune_rtmlib(self.pose, cfg["pose"])
 
-    def infer(self, frame_bgr: np.ndarray) -> list[Person]:
-        bboxes = self.det(frame_bgr)
-        if bboxes is None or len(bboxes) == 0:
+    def _detect(self, frame_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+        """YOLOX の生出力から自分でしきい値を掛ける。
+        (rtmlib は NMS 内蔵 ONNX に対して score_thr を無視し 0.3 固定にしてしまい、スコアも捨てるため)"""
+        img, ratio = self.det.preprocess(frame_bgr)
+        out = self.det.inference(img)[0]
+        if out.ndim == 3 and out.shape[-1] == 5:          # NMS 内蔵: (1, N, [x1,y1,x2,y2,score])
+            boxes, scores = out[0, :, :4] / ratio, out[0, :, 4]
+            keep = scores > self.det_thr
+            return boxes[keep], scores[keep]
+        boxes = self.det.postprocess(out, ratio)           # NMS 無しモデルは rtmlib に任せる
+        return np.asarray(boxes, dtype=np.float32).reshape(-1, 4), None
+
+    def infer(self, frame_bgr: np.ndarray, ts_ms: float | None = None) -> list[Person]:
+        bboxes, det_scores = self._detect(frame_bgr)
+        if len(bboxes) == 0:
             return []
         kps, scs = self.pose(frame_bgr, bboxes=bboxes)
         persons = []
-        for bbox, kp, sc in zip(bboxes, kps, scs):
+        for i, (bbox, kp, sc) in enumerate(zip(bboxes, kps, scs)):
             persons.append(Person(
                 bbox=np.asarray(bbox, dtype=np.float32),
-                score=float(np.mean(sc)),
+                score=float(det_scores[i]) if det_scores is not None else float(np.mean(sc)),
                 keypoints=np.asarray(kp, dtype=np.float32),
                 kp_scores=np.asarray(sc, dtype=np.float32),
             ))

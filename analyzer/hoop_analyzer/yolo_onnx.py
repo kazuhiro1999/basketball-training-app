@@ -49,6 +49,28 @@ class YoloOnnx:
         return out[0].T, r, pad
 
 
+class YoloClassDetector:
+    """COCO 検出モデル (yolo11n.onnx) の特定クラスだけを返す。→ [(xyxy, score), ...] スコア降順"""
+
+    def __init__(self, class_id: int, size: str = "n", conf_thr: float = 0.3, iou_thr: float = 0.5) -> None:
+        self.class_id, self.conf_thr, self.iou_thr = class_id, conf_thr, iou_thr
+        self.model = YoloOnnx(MODELS_DIR / f"yolo11{size}.onnx")
+
+    def detect(self, frame_bgr: np.ndarray) -> list[tuple[np.ndarray, float]]:
+        pred, r, pad = self.model.run(frame_bgr)
+        scores = pred[:, 4 + self.class_id]
+        m = scores > self.conf_thr
+        if not m.any():
+            return []
+        boxes = cxcywh_to_xyxy(pred[m, :4])
+        scores = scores[m]
+        keep = nms_xyxy(boxes, scores, self.conf_thr, self.iou_thr)
+        boxes = unletterbox_xyxy(boxes[keep], r, pad)
+        out = [(b.astype(np.float32), float(s)) for b, s in zip(boxes, scores[keep])]
+        out.sort(key=lambda t: -t[1])
+        return out
+
+
 def nms_xyxy(boxes: np.ndarray, scores: np.ndarray, conf_thr: float, iou_thr: float) -> np.ndarray:
     if len(boxes) == 0:
         return np.zeros(0, dtype=int)

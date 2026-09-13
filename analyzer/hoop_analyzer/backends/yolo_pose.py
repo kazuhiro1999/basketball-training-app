@@ -23,7 +23,7 @@ class YoloPoseBackend(PoseBackend):
         self.model_path = model_path or MODELS_DIR / f"yolo11{self.size}-pose.onnx"
         self.model = YoloOnnx(self.model_path)
 
-    def infer(self, frame_bgr: np.ndarray) -> list[Person]:
+    def infer(self, frame_bgr: np.ndarray, ts_ms: float | None = None) -> list[Person]:
         pred, r, pad = self.model.run(frame_bgr)          # (N, 56)
         conf = pred[:, 4]
         m = conf > self.det_thr

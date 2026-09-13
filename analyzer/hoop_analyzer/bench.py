@@ -45,8 +45,8 @@ def main(argv: list[str] | None = None) -> None:
             load = time.perf_counter() - t0
             t1 = time.perf_counter()
             n_p = 0
-            for img in frames:
-                n_p += len(be.infer(img))
+            for k, img in enumerate(frames):
+                n_p += len(be.infer(img, ts_ms=k * 1000 / src.fps))
             el = time.perf_counter() - t1
             d = be.describe()
             model = d.get("model") or f"{d.get('det_model')} + {d.get('pose_model')}"

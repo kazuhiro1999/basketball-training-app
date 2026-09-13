@@ -17,3 +17,10 @@ Thumbs.db
 
 # 録画・ログ (delaycam)
 logs/
+
+# analyzer: モデル・出力
+analyzer/models/
+*.onnx
+*.pt
+*_analysis/
+analysis/

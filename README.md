@@ -7,8 +7,8 @@ Analyze and master your shooting form with delayed playback. This app offers rea
 
 | ディレクトリ | 内容 | 状態 |
 |---|---|---|
-| [`delaycam/`](delaycam/) | 遅延ビューワー本体（Python サーバ + スマホ用/PC用 Web ページ）+ 録画・操作ログ | **v1.1** — 使い方は [delaycam/README.md](delaycam/README.md) |
-| [`analyzer/`](analyzer/) | 録画に対する骨格推定（RTMO / RTMPose / YOLO-pose を差し替え可）・複数人トラッキング・ボール検出。ONNX Runtime CPU | **0.1** — 使い方は [analyzer/README.md](analyzer/README.md) |
+| [`delaycam/`](delaycam/) | 遅延ビューワー本体（Python サーバ + スマホ用/PC用 Web ページ）+ 録画・操作ログ + 骨格オーバーレイ表示 | **v1.2** — 使い方は [delaycam/README.md](delaycam/README.md) |
+| [`analyzer/`](analyzer/) | 骨格推定（RTMPose / RTMO / YOLO-pose / MediaPipe を差し替え可）・複数人トラッキング・ボール検出。録画のオフライン解析と、遅延再生へのライブ骨格供給（`uv run live`）。ONNX Runtime CPU | **0.2** — 使い方は [analyzer/README.md](analyzer/README.md) |
 
 ## 撮影の前提（v1）
 

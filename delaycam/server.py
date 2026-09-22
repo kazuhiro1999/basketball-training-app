@@ -46,7 +46,7 @@ import qrcode
 import qrcode.image.svg
 from aiohttp import WSMsgType, web
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
 CERT_DIR = BASE / "certs"
@@ -195,6 +195,7 @@ class Recorder:
         self.events = None
         self.session_seg: dict[str, int] = {}
         self.daily_events = None
+        self.pose_file = None            # ライブ骨格 (アナライザの結果) を録画に添える
         self.rec_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- 受信データ (録画中でなくても常に呼ぶ: プリロール用)
@@ -272,10 +273,10 @@ class Recorder:
         self.meta["ended_unix_ms"] = int(now * 1000)
         self.meta["duration_sec"] = round(now - self.meta["started_unix_ms"] / 1000, 3)
         self.save_meta()
-        for f in (self.frames, self.events):
+        for f in (self.frames, self.events, self.pose_file):
             if f:
                 f.close()
-        self.frames = self.events = None
+        self.frames = self.events = self.pose_file = None
         if self.meta["frames_total"] == 0:   # カメラ未接続のまま止めた等: 空フォルダは残さない
             shutil.rmtree(self.dir, ignore_errors=True)
             log(f"録画停止 ({reason}): 映像が無いため {self.dir.name} は削除しました")
@@ -406,8 +407,19 @@ class Recorder:
         except OSError:
             pass
 
+    def feed_pose(self, obj: dict) -> None:
+        """アナライザからの骨格結果を録画フォルダの pose_live.jsonl に残す (録画中のみ)。"""
+        if not self.active or not self.dir:
+            return
+        if self.pose_file is None:
+            self.pose_file = open(self.dir / "pose_live.jsonl", "a", encoding="utf-8")
+        sess = obj.get("session")
+        if sess in self.session_seg:
+            obj = {**obj, "seg": self.session_seg[sess]}
+        self.pose_file.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
+
     def flush(self) -> None:
-        for f in (self.video, self.frames, self.events, self.daily_events):
+        for f in (self.video, self.frames, self.events, self.daily_events, self.pose_file):
             if f:
                 f.flush()
         if self.active:
@@ -450,6 +462,8 @@ class Hub:
         self.cam: web.WebSocketResponse | None = None
         self.cam_queue: asyncio.Queue | None = None
         self.viewers: dict[web.WebSocketResponse, asyncio.Queue] = {}
+        self.analyzers: dict[web.WebSocketResponse, asyncio.Queue] = {}   # 骨格推定プロセス (映像を購読し pose を返す)
+        self.analyzer_status: dict | None = None
         self.last_config: str | None = None
         self.cam_url = ""
         self.all_urls: list[str] = []
@@ -468,16 +482,25 @@ class Hub:
                 "urls": self.all_urls,
                 "viewers": len(self.viewers),
                 "recording": self.recorder.status(),
+                "analyzer": self.analyzer_status if self.analyzers else None,
                 "version": VERSION,
             }
         )
 
-    def broadcast(self, data: str | bytes) -> None:
-        for q in list(self.viewers.values()):
+    def broadcast(self, data: str | bytes, to_analyzers: bool = True) -> None:
+        targets = list(self.viewers.values()) + (list(self.analyzers.values()) if to_analyzers else [])
+        for q in targets:
             try:
                 q.put_nowait(data)
             except asyncio.QueueFull:
                 self.dropped += 1
+
+    def send_analyzers(self, data: str) -> None:
+        for q in list(self.analyzers.values()):
+            try:
+                q.put_nowait(data)
+            except asyncio.QueueFull:
+                pass
 
     def broadcast_status(self) -> None:
         s = self.status_json()
@@ -599,12 +622,64 @@ async def ws_view(request: web.Request) -> web.StreamResponse:
                 elif t == "event":
                     ev = {k: v for k, v in obj.items() if k != "type"}
                     rec.log_event({"type": "ui", "remote": request.remote, **ev})
+                elif t == "analyzer_cmd":
+                    # 骨格推定の設定変更 (推論間隔・プリセット) を表示側からアナライザへ中継
+                    if not is_local:
+                        continue
+                    if not hub.analyzers:
+                        q.put_nowait(json.dumps({"type": "toast", "text": "骨格推定 (アナライザ) が接続されていません"}))
+                        continue
+                    hub.send_analyzers(msg.data)
+                    rec.log_event({"type": "ui", "remote": request.remote, "action": "analyzer_cmd", **{k: v for k, v in obj.items() if k != "type"}})
             elif msg.type == WSMsgType.ERROR:
                 break
     finally:
         hub.viewers.pop(ws, None)
         sender.cancel()
         log(f"ビューア切断: {request.remote}")
+    return ws
+
+
+async def ws_analyzer(request: web.Request) -> web.StreamResponse:
+    """骨格推定プロセス用。映像チャンクと config を viewer と同じ形で受け取り、
+    {"type":"pose", session, ts_us, persons:[...]} を返す。サーバは viewer へ中継するだけで中身は知らない。"""
+    hub: Hub = request.app["hub"]
+    rec = hub.recorder
+    ws = web.WebSocketResponse(heartbeat=15, max_msg_size=8 * 1024 * 1024)
+    await ws.prepare(request)
+    q: asyncio.Queue = asyncio.Queue(maxsize=900)
+    hub.analyzers[ws] = q
+    sender = asyncio.create_task(_sender(ws, q))
+    log(f"アナライザ接続: {request.remote}")
+    rec.log_event({"type": "analyzer_connect", "remote": request.remote})
+    q.put_nowait(hub.status_json())
+    if hub.cam is not None and hub.last_config:
+        q.put_nowait(hub.last_config)
+    try:
+        async for msg in ws:
+            if msg.type != WSMsgType.TEXT:
+                if msg.type == WSMsgType.ERROR:
+                    break
+                continue
+            try:
+                obj = json.loads(msg.data)
+            except json.JSONDecodeError:
+                continue
+            t = obj.get("type")
+            if t == "pose":
+                hub.broadcast(msg.data, to_analyzers=False)
+                rec.feed_pose(obj)
+            elif t == "analyzer_status":
+                hub.analyzer_status = {k: v for k, v in obj.items() if k != "type"}
+                hub.broadcast_status()
+    finally:
+        hub.analyzers.pop(ws, None)
+        if not hub.analyzers:
+            hub.analyzer_status = None
+        sender.cancel()
+        hub.broadcast_status()
+        log(f"アナライザ切断: {request.remote}")
+        rec.log_event({"type": "analyzer_disconnect", "remote": request.remote})
     return ws
 
 
@@ -636,6 +711,7 @@ async def info(request: web.Request) -> web.StreamResponse:
             "rx_bytes": hub.rx_bytes,
             "dropped": hub.dropped,
             "recording": hub.recorder.status(),
+            "analyzer": hub.analyzer_status if hub.analyzers else None,
         }
     )
 
@@ -687,6 +763,7 @@ def make_app(hub: Hub) -> web.Application:
     app.router.add_get("/view", page("view.html"))
     app.router.add_get("/ws/cam", ws_cam)
     app.router.add_get("/ws/view", ws_view)
+    app.router.add_get("/ws/analyzer", ws_analyzer)
     app.router.add_get("/qr.svg", qr_svg)
     app.router.add_get("/info.json", info)
     app.router.add_post("/quit", quit_app)

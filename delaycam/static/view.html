@@ -35,6 +35,13 @@
   #bar button.play.paused:hover { background: #fa3; }
   #bar button.quit { background: #733; } #bar button.quit:hover { background: #a44; }
   #bar button.rec { border: 2px solid #c33; background: #222; color: #f66; }
+  #bar button.pose.on { background: #27a; }
+  .card .row { display: flex; gap: 1.5vw; align-items: center; justify-content: center; margin: 1vh 0; font-size: 2.4vh; flex-wrap: wrap; }
+  .card .row label { display: flex; align-items: center; gap: .5vw; cursor: pointer; }
+  .card .row select, .card .row input[type=range] { font-size: 2.2vh; }
+  .card .seg { display: inline-flex; border: 1px solid #555; border-radius: .8vh; overflow: hidden; }
+  .card .seg button { font-size: 2.2vh; padding: .6vh 1.2vw; border: 0; background: #222; color: #ccc; }
+  .card .seg button.on { background: #27a; color: #fff; }
   #bar button.rec.on { background: #c33; color: #fff; }
   .card form { text-align: left; font-size: 2.4vh; display: grid; grid-template-columns: auto 1fr; gap: 1.2vh 1.5vw; align-items: center; margin-top: 1vh; }
   .card form label { color: #aaa; white-space: nowrap; }
@@ -80,6 +87,7 @@
   <button data-act="slow" id="slowbtn" title="スロー 0.5× (S)">0.5×</button>
   <button data-act="live" title="設定遅延に復帰 (L)">LIVE</button>
   <span class="sep"></span>
+  <button data-act="posecard" id="posebtn" class="pose" title="骨格表示の設定 (P で ON/OFF)">骨格</button>
   <button data-act="mirror" id="mirrorbtn" title="左右反転 (M)">鏡</button>
   <button data-act="rotate" id="rotatebtn" title="表示を90°回転 (R)">回転</button>
   <button data-act="qr" title="QR表示 (Q)">QR</button>
@@ -111,6 +119,7 @@
       <tr><td>PageUp / PageDown</td><td>5秒戻す / 進める</td></tr>
       <tr><td>S</td><td>スロー再生 0.5× の切替</td></tr>
       <tr><td>L</td><td>設定した遅延秒数に復帰して再生</td></tr>
+      <tr><td>P</td><td>骨格表示の ON/OFF（設定は「骨格」ボタン）</td></tr>
       <tr><td>M</td><td>左右反転（鏡）</td></tr>
       <tr><td>R</td><td>表示を90°回転（縦置きディスプレイ用）</td></tr>
       <tr><td>F</td><td>全画面</td></tr>
@@ -156,6 +165,37 @@
   </div>
 </div>
 
+<div id="posecard" class="overlay" hidden>
+  <div class="card">
+    <button class="close" data-close="posecard" title="閉じる">×</button>
+    <h2>骨格表示</h2>
+    <div class="row">
+      <label><input type="checkbox" id="pose_enabled"> 表示する (P)</label>
+      <label><input type="checkbox" id="pose_interp"> 推論の間を補間</label>
+      <label><input type="checkbox" id="pose_id"> ID を表示</label>
+      <label><input type="checkbox" id="pose_box"> 枠を表示</label>
+    </div>
+    <div class="row">
+      <span>線の太さ</span><input type="range" id="pose_lw" min="1" max="8" step="1">
+    </div>
+    <div class="row">
+      <span>推論間隔</span>
+      <span class="seg" id="pose_stride">
+        <button data-stride="1">毎フレーム</button><button data-stride="2">2</button><button data-stride="3">3</button><button data-stride="4">4</button><button data-stride="0">自動</button>
+      </span>
+    </div>
+    <div class="row">
+      <span>モデル</span>
+      <span class="seg" id="pose_preset">
+        <button data-preset="light">軽い</button><button data-preset="medium">標準</button><button data-preset="heavy">重い</button>
+      </span>
+    </div>
+    <div class="stat" id="pose_stat">アナライザ未接続</div>
+    <div class="hint">骨格推定は別プロセス (analyzer/start_live.bat) が行い、この画面は届いた結果を重ねるだけです。<br>
+      推論間隔を空けるほど軽くなり、間は前後の結果から補間されます。「自動」は処理が追いつかない時だけ間隔を広げます。</div>
+  </div>
+</div>
+
 <div id="quit" class="overlay" hidden>
   <div class="card">
     <h2>DelayCam を終了しますか？</h2>
@@ -167,6 +207,7 @@
   </div>
 </div>
 
+<script src="/static/pose_overlay.js"></script>
 <script src="/static/view.js"></script>
 </body>
 </html>

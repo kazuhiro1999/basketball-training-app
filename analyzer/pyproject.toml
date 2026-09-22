@@ -1,6 +1,6 @@
 [project]
 name = "hoop-analyzer"
-version = "0.1.0"
+version = "0.2.0"
 description = "録画 (delaycam) に対する骨格推定・ボール検出・トラッキング。バックエンド差し替え可能"
 requires-python = ">=3.10"
 dependencies = [
@@ -10,6 +10,7 @@ dependencies = [
     "av>=12",
     "rtmlib>=0.0.13",
     "scipy>=1.11",
+    "aiohttp>=3.9",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,7 @@ mediapipe = ["mediapipe>=0.10"]
 analyze = "hoop_analyzer.run:main"
 bench = "hoop_analyzer.bench:main"
 trackstats = "hoop_analyzer.trackstats:main"
+live = "hoop_analyzer.live:main"
 
 [build-system]
 requires = ["hatchling"]

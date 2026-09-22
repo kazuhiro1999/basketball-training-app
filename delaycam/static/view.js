@@ -28,6 +28,7 @@ const ui = {
   playbtn: $('playbtn'), slowbtn: $('slowbtn'), mirrorbtn: $('mirrorbtn'), rotatebtn: $('rotatebtn'),
   rec: $('rec'), rectime: $('rectime'), recsize: $('recsize'), recbtn: $('recbtn'), reccard: $('reccard'),
   rectitle: $('rectitle'), recform: $('recform'), recstat: $('recstat'), recok: $('recok'), toast: $('toast'),
+  posebtn: $('posebtn'), posecard: $('posecard'), poseStat: $('pose_stat'),
 };
 
 let targetDelay = clamp(parseFloat(params.get('delay')) || 15, 0.5, MAX_TARGET);
@@ -44,6 +45,8 @@ let decoder = null, curSession = null, needKey = true, suppressBeforeTs = -1, la
 let inSession = null;     // 受信中のセッション
 let camConnected = false, camUrl = '', ws = null;
 let recording = { active: false };   // サーバから届く録画状態
+let analyzerStatus = null;           // 骨格推定プロセスの状態 (サーバ経由)
+let lastFrameSession = null;         // 表示中フレームのセッション id (骨格の照合用)
 const stats = { rxFrames: 0, rxBytes: 0, decoded: 0, prevRx: 0, prevRxBytes: 0, prevDecoded: 0, rxFps: 0, rxMbps: 0, decFps: 0 };
 
 try {
@@ -78,7 +81,11 @@ function onText(m) {
     if (!camConnected) inSession = null;
     if (camConnected && !was) qrDismissed = false;   // 次に切れた時はまた出す
     if (m.recording) { recording = m.recording; updateRecUi(); }
+    analyzerStatus = m.analyzer || null;
+    updatePoseCard();
     updateOverlay();
+  } else if (m.type === 'pose') {
+    PoseOverlay.onMessage(m);
   } else if (m.type === 'toast') {
     toast(m.text);
   } else if (m.type === 'config') {
@@ -144,6 +151,7 @@ function onFrame(frame) {
   if (suppressBeforeTs >= 0 && frame.timestamp < suppressBeforeTs) { frame.close(); return; }  // シーク中の中間フレーム
   if (lastFrame) lastFrame.close();
   lastFrame = frame;
+  lastFrameSession = curSession ? curSession.id : null;
   stats.decoded++;
   drawFrame();
 }
@@ -275,6 +283,8 @@ const actions = {
   fs: () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); },
   quit: () => { ui.quit.hidden = false; },
   rec: () => { openRecCard(); },
+  pose: () => { const on = PoseOverlay.toggle(); toast(on ? '骨格表示 ON' : '骨格表示 OFF', 1200); updatePoseCard(); drawFrame(); },
+  posecard: () => { updatePoseCard(); ui.posecard.hidden = false; },
 };
 
 // 画面操作をサーバに送る (録画中は録画フォルダの events.jsonl、常に logs/ にも残る)。
@@ -292,7 +302,7 @@ function sendEvent(action, extra = {}) {
     ...extra,
   }));
 }
-const LOGGED_ACTIONS = ['delay+', 'delay-', 'pause', 'slow', 'live', 'step-', 'step+', 'back', 'fwd', 'mirror', 'rotate'];
+const LOGGED_ACTIONS = ['delay+', 'delay-', 'pause', 'slow', 'live', 'step-', 'step+', 'back', 'fwd', 'mirror', 'rotate', 'pose'];
 function runAction(act, source) {
   if (!actions[act]) return;
   const before = { rate, targetDelay };
@@ -302,13 +312,13 @@ function runAction(act, source) {
 const keymap = {
   ArrowUp: 'delay+', ArrowDown: 'delay-', '+': 'delay+', '-': 'delay-', ' ': 'pause',
   ArrowLeft: 'step-', ArrowRight: 'step+', PageUp: 'back', PageDown: 'fwd',
-  s: 'slow', l: 'live', m: 'mirror', r: 'rotate', q: 'qr', h: 'help', f: 'fs',
+  s: 'slow', l: 'live', m: 'mirror', r: 'rotate', q: 'qr', h: 'help', f: 'fs', p: 'pose',
 };
 
-function anyOverlayOpen() { return !ui.qr.hidden || !ui.help.hidden || !ui.quit.hidden || !ui.reccard.hidden; }
+function anyOverlayOpen() { return !ui.qr.hidden || !ui.help.hidden || !ui.quit.hidden || !ui.reccard.hidden || !ui.posecard.hidden; }
 function closeOverlays() {
   if (!ui.qr.hidden) { qrForced = false; qrDismissed = true; }
-  ui.help.hidden = true; ui.quit.hidden = true; ui.reccard.hidden = true;
+  ui.help.hidden = true; ui.quit.hidden = true; ui.reccard.hidden = true; ui.posecard.hidden = true;
   updateOverlay();
 }
 
@@ -402,6 +412,47 @@ ui.recok.addEventListener('click', () => {
 });
 loadSetup();
 
+// ---------------------------------------------------------------- 骨格表示の設定カード
+
+const poseUi = {
+  enabled: $('pose_enabled'), interp: $('pose_interp'), id: $('pose_id'), box: $('pose_box'), lw: $('pose_lw'),
+  stride: $('pose_stride'), preset: $('pose_preset'),
+};
+poseUi.enabled.addEventListener('change', () => { PoseOverlay.set('enabled', poseUi.enabled.checked); updatePoseCard(); drawFrame(); });
+poseUi.interp.addEventListener('change', () => PoseOverlay.set('interpolate', poseUi.interp.checked));
+poseUi.id.addEventListener('change', () => { PoseOverlay.set('showId', poseUi.id.checked); drawFrame(); });
+poseUi.box.addEventListener('change', () => { PoseOverlay.set('showBox', poseUi.box.checked); drawFrame(); });
+poseUi.lw.addEventListener('input', () => { PoseOverlay.set('lineWidth', +poseUi.lw.value); drawFrame(); });
+poseUi.stride.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  sendAnalyzerCmd({ stride: +b.dataset.stride });
+});
+poseUi.preset.addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  sendAnalyzerCmd({ preset: b.dataset.preset });
+  toast('モデルを切り替えています…', 2500);
+});
+function sendAnalyzerCmd(cmd) {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'analyzer_cmd', ...cmd }));
+}
+function updatePoseCard() {
+  const st = PoseOverlay.settings;
+  ui.posebtn.classList.toggle('on', st.enabled);
+  poseUi.enabled.checked = st.enabled; poseUi.interp.checked = st.interpolate;
+  poseUi.id.checked = st.showId; poseUi.box.checked = st.showBox; poseUi.lw.value = st.lineWidth;
+  const a = analyzerStatus;
+  for (const b of poseUi.stride.querySelectorAll('button')) {
+    b.classList.toggle('on', !!a && ((a.auto_stride && +b.dataset.stride === 0) || (!a.auto_stride && +b.dataset.stride === a.stride)));
+  }
+  for (const b of poseUi.preset.querySelectorAll('button')) b.classList.toggle('on', !!a && b.dataset.preset === a.preset);
+  if (!a) { ui.poseStat.textContent = 'アナライザ未接続 (analyzer/start_live.bat で起動)'; return; }
+  const ps = PoseOverlay.status();
+  ui.poseStat.textContent =
+    `${a.backend}  推論 ${a.infer_fps ?? '?'}fps (${a.infer_ms ?? '?'}ms/回)  実効間隔 ${a.stride}${a.auto_stride ? ' (自動)' : ''}  ` +
+    `待ち ${a.backlog ?? 0}フレーム  人物 ${a.persons ?? '-'}  受信 ${ps.received} 件`;
+}
+
 let toastTimer = 0;
 function toast(text, ms = 3000) {
   ui.toast.textContent = text; ui.toast.style.display = 'block';
@@ -453,6 +504,10 @@ function drawFrame() {
   if (mirror) ctx.scale(-1, 1);                      // 画面上での左右反転 (回転より外側に掛ける)
   ctx.rotate(rotation * Math.PI / 180);
   ctx.drawImage(lastFrame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
+  // 骨格: フレームのピクセル座標で描けるように同じ変換の上に載せる (鏡・回転もそのまま効く)
+  ctx.translate(-fw * s / 2, -fh * s / 2);
+  ctx.scale(s, s);
+  PoseOverlay.draw(ctx, lastFrameSession, lastFrame.timestamp, s);
   ctx.restore();
 }
 
@@ -491,7 +546,10 @@ function updateHud() {
   ui.status.textContent =
     `${camConnected ? '● カメラ接続中' : '○ カメラ未接続'}  受信 ${stats.rxFps}fps ${stats.rxMbps.toFixed(2)}Mbps  表示 ${stats.decFps}fps\n` +
     `${sess ? `${sess.width}×${sess.height} ${sess.codec}` : ''}  設定遅延 ${targetDelay}s  先読み ${bufferedAhead().toFixed(1)}s  巻戻し可 ${hist.toFixed(0)}s` +
-    `${mirror ? '  鏡' : ''}${rotation ? `  回転${rotation}°` : ''}`;
+    `${mirror ? '  鏡' : ''}${rotation ? `  回転${rotation}°` : ''}\n` +
+    (analyzerStatus
+      ? `骨格 ${PoseOverlay.settings.enabled ? 'ON' : 'OFF'}  ${analyzerStatus.backend} ${analyzerStatus.infer_fps ?? '?'}fps 間隔${analyzerStatus.stride}${analyzerStatus.auto_stride ? '(自動)' : ''}  待ち${analyzerStatus.backlog ?? 0}`
+      : `骨格 ${PoseOverlay.settings.enabled ? 'ON' : 'OFF'}  (アナライザ未接続)`);
 }
 
 setInterval(() => {
@@ -501,6 +559,7 @@ setInterval(() => {
   updateHud();
   updateOverlay();
   updateRecUi();
+  if (!ui.posecard.hidden) updatePoseCard();
   if (++statsTick % 5 === 0) sendEvent('viewer_stats', { rx_fps: stats.rxFps, dec_fps: stats.decFps, buffered_ahead: bufferedAhead() });
 }, 1000);
 let statsTick = 0;
@@ -511,7 +570,7 @@ if (!('VideoDecoder' in window)) {
   document.body.innerHTML = '<div style="padding:4vh;font-size:4vh">このブラウザは WebCodecs 非対応です。Chrome または Edge で開いてください。</div>';
 } else {
   resize();
-  fetch('/info.json').then((r) => r.json()).then((i) => { camUrl = i.cam_url; camConnected = i.cam_connected; if (i.recording) { recording = i.recording; updateRecUi(); } updateOverlay(); }).catch(() => {});
+  fetch('/info.json').then((r) => r.json()).then((i) => { camUrl = i.cam_url; camConnected = i.cam_connected; if (i.recording) { recording = i.recording; updateRecUi(); } analyzerStatus = i.analyzer || null; updatePoseCard(); updateOverlay(); }).catch(() => {});
   connect();
   updateHud();
   requestAnimationFrame(tick);

@@ -96,6 +96,7 @@ git archive -o delaycam.zip HEAD:delaycam
 | PageUp / PageDown | 5 秒戻す / 進める |
 | S | スロー再生 0.5× |
 | L | 設定した遅延に戻して通常再生 |
+| P | 骨格表示の ON/OFF（設定は「骨格」ボタン） |
 | M | 左右反転（鏡） |
 | R | 表示を 90° 回転（縦置きディスプレイ用） |
 | F | 全画面 |
@@ -106,6 +107,36 @@ git archive -o delaycam.zip HEAD:delaycam
 
 マウスを動かすと同じ操作のボタンが下に出る。プレゼン用リモコン（PageUp/PageDown が送れるもの）があるとコート脇から操作できる。
 初期遅延は URL で変えられる: `http://localhost:8080/view?delay=10`
+
+## 骨格表示（v1.2）
+
+映像に骨格（COCO-17 の関節と線、人物 ID）を重ねる。**骨格推定は別プロセス**（`analyzer/`）が行い、
+表示側はサーバ経由で届いた結果を重ねるだけ。アナライザを起動しなければ今まで通りの動作で、
+起動すれば自動的に重なる（表示の ON/OFF は `P` キーまたは「骨格」ボタン）。
+
+```
+スマホ ──H.264──▶ server.py ──同じチャンク──▶ /view (表示)          ▲ {"type":"pose", session, ts_us, persons}
+                       └──────────────────▶ /ws/analyzer ──▶ analyzer (uv run live) ──┘
+```
+
+1. `delaycam/start.bat` で表示を起動（従来どおり）
+2. **`analyzer/start_live.bat`** を起動（初回はモデルを ~50MB ダウンロード。事前にネットのある所で一度起動しておく）
+3. 映像が出ている画面に骨格が重なる。左下 HUD の 3 行目にアナライザの状態（モデル・推論 fps・推論間隔・待ちフレーム）
+
+「骨格」ボタンの設定カード:
+
+| 項目 | 内容 |
+|---|---|
+| 表示する / 補間 / ID / 枠 / 線の太さ | 表示側だけの設定（保存される） |
+| 推論間隔 | 毎フレーム / 2 / 3 / 4 / 自動。アナライザに送られる。**自動**は処理が追いつかない時だけ間隔を広げ、余裕が出れば戻す |
+| モデル | 軽い（rtmpose-s, 最大 2 人）/ 標準（rtmpose-s, 最大 6 人）/ 重い（rtmpose-m）。切替に数秒 |
+
+推論しなかったフレームは前後の結果を人物 ID ごとに線形補間して描く（0.25 秒以内に次の結果が無ければ直前を流用、
+0.6 秒以上空いた区間は補間しない）。遅延再生なので推論が表示より 10 秒遅れても問題なく、必要なのは
+「平均して 30 ÷ 間隔 fps の推論が続くこと」だけ。目安（このプロジェクトの開発機、CPU のみ）: rtmpose-s は 6 人写って 1 回 60〜110 ms、
+rtmpose-m は 190 ms。Core i7 なら「標準・間隔 2〜3」が現実的な出発点。
+
+録画中はアナライザの結果も `pose_live.jsonl` として録画フォルダに残る。
 
 ## 録画とログ
 
@@ -131,6 +162,7 @@ recordings/2026-09-13_17-40-12/
                  （VP8/VP9 のときは seg01.ivf。カメラが再接続すると seg02… と分かれる）
   frames.csv     seg, n, ts_us, key, offset, size, recv_unix_ms
   events.jsonl   1 行 1 イベント（後述）
+  pose_live.jsonl ライブ骨格推定の結果（アナライザ稼働時のみ。1 行 1 推論: session, ts_us, seg, persons）
 ```
 
 - `ts_us` はスマホ側のフレームタイムスタンプ（µs、セグメント内で単調増加）。`recv_unix_ms` は PC 到着時刻
@@ -159,6 +191,7 @@ MP4 が欲しいときは開発 PC で `ffmpeg -r 30 -i seg01.h264 -c copy seg01
 ```bash
 uv run tools/rec_info.py recordings                   # 録画の一覧・要約（fps、欠落、イベント数）
 uv run tools/rec_replay.py recordings/2026-09-13_17-40-12 --loop   # 録画を偽スマホとしてサーバに流す
+uv run tools/video_to_recording.py clip.mp4 recordings/clip        # 普通の動画を録画フォルダ形式に変換（テスト用）
 ```
 
 `rec_replay.py` を使うとコートに行かずに表示側・解析側の開発ができる（サーバは本物のスマホと区別しない）。
@@ -196,6 +229,7 @@ uv run tools/rec_replay.py recordings/2026-09-13_17-40-12 --loop   # 録画を�
 | `server.py` | aiohttp サーバ。静的配信、WebSocket 中継、QR 生成、自己署名証明書生成 |
 | `static/cam.html` / `cam.js` | スマホ側。getUserMedia → VideoEncoder → WebSocket |
 | `static/view.html` / `view.js` | PC 側。受信 → バッファ → VideoDecoder → canvas。操作はすべてここ |
+| `static/pose_overlay.js` | 骨格の蓄積・補間・描画。view.js からは `onMessage` / `draw` / `toggle` だけを呼ぶ |
 | `start.bat` | uv の自動インストール + `--kiosk` 起動 |
 | `tools/` | 録画の要約・再送ツール |
 | `certs/` | 初回起動時に自動生成される自己署名証明書（git 管理外） |
@@ -204,8 +238,11 @@ uv run tools/rec_replay.py recordings/2026-09-13_17-40-12 --loop   # 録画を�
 ### 通信形式
 
 - テキスト: `{"type":"config", session, codec, width, height, fps, bitrate, ua, orientation, camera, settings}`（エンコーダ設定時に送信）
-- 表示側 → サーバ: `{"type":"rec", action:"start"|"stop", setup, delay}`（localhost のみ）、`{"type":"event", action, display_ts_us, …}`
-- サーバ → 表示側/スマホ: `{"type":"status", cam, cam_url, recording:{active, id, bytes, frames, free_gb, …}}`
+- 表示側 → サーバ: `{"type":"rec", action:"start"|"stop", setup, delay}`（localhost のみ）、`{"type":"event", action, display_ts_us, …}`、
+  `{"type":"analyzer_cmd", stride | preset}`（localhost のみ、アナライザへ中継）
+- サーバ → 表示側/スマホ: `{"type":"status", cam, cam_url, recording:{…}, analyzer:{backend, stride, auto_stride, infer_ms, infer_fps, backlog, persons}|null}`
+- アナライザ（`/ws/analyzer`）: 受信は表示側と同じ（config + チャンク）。送信 `{"type":"pose", session, ts_us, persons:[{id, score, bbox, kp:[[x,y,c]×17]}], infer_ms, stride}`
+  と `{"type":"analyzer_status", …}`。サーバは pose を表示側へそのまま中継する（中身は解釈しない）
 - バイナリ: 16 バイトヘッダ + エンコード済みチャンク
   `u8 version(1) | u8 flags(bit0=key) | u16 予約 | f64 timestamp(µs) | u32 duration(µs)`
 - H.264 は Annex B 形式（SPS/PPS がキーフレームに含まれるので、復号側に別途設定不要）
@@ -213,5 +250,6 @@ uv run tools/rec_replay.py recordings/2026-09-13_17-40-12 --loop   # 録画を�
 ## 今後の拡張候補
 
 - 「直前の N 秒をループ再生」ボタン
+- 骨格に加えてボール軌跡・関節角度の表示（アナライザ側の pose メッセージに項目を足すだけで表示側は疎結合のまま）
 - スマホ 2 台（正面・横）の同時表示
 - ネイティブ Android アプリ化（4K/60fps や高ビットレートが必要になったら。通信形式はそのまま使える）

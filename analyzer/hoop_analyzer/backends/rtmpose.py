@@ -19,8 +19,10 @@ class RTMPoseBackend(PoseBackend):
     default_size = "m"
     _MODE = {"s": "lightweight", "m": "balanced", "x": "performance"}
 
-    def __init__(self, size: str | None = None, det_thr: float = 0.5, kp_thr: float = 0.3) -> None:
+    def __init__(self, size: str | None = None, det_thr: float = 0.5, kp_thr: float = 0.3,
+                 max_persons: int = 0) -> None:
         super().__init__(size, det_thr, kp_thr)
+        self.max_persons = max_persons      # 0 = 制限なし。ライブ用: 大きく写る順に上位だけ姿勢推定して時間を抑える
         from rtmlib import RTMPose, YOLOX
         from rtmlib.tools.solution.body import Body
 
@@ -50,6 +52,10 @@ class RTMPoseBackend(PoseBackend):
         bboxes, det_scores = self._detect(frame_bgr)
         if len(bboxes) == 0:
             return []
+        if self.max_persons and len(bboxes) > self.max_persons:
+            order = np.argsort(-(bboxes[:, 3] - bboxes[:, 1]))[: self.max_persons]
+            bboxes = bboxes[order]
+            det_scores = det_scores[order] if det_scores is not None else None
         kps, scs = self.pose(frame_bgr, bboxes=bboxes)
         persons = []
         for i, (bbox, kp, sc) in enumerate(zip(bboxes, kps, scs)):
@@ -64,6 +70,7 @@ class RTMPoseBackend(PoseBackend):
     def describe(self) -> dict:
         d = super().describe()
         d.update({
+            "max_persons": self.max_persons,
             "det_model": self.cfg["det"].rsplit("/", 1)[-1], "det_input": list(self.cfg["det_input_size"]),
             "pose_model": self.cfg["pose"].rsplit("/", 1)[-1], "pose_input": list(self.cfg["pose_input_size"]),
         })

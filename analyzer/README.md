@@ -20,6 +20,24 @@ MediaPipe 系は `uv sync --extra mediapipe`。BlazePose の人検出は画像�
 トラッカー（`--tracker`）: `simple`（IoU + キーポイント一致 + 服の色で対応付け、依存なし、既定）/ `bytetrack` / `ocsort` / `sort`（roboflow `trackers`）。
 ボール（`--ball yolo`）: YOLO11 の COCO `sports ball` クラス + 等速外挿の簡易トラッカー。
 
+## ライブ（遅延再生への骨格表示）
+
+```bash
+uv run live                                  # ws://localhost:8080/ws/analyzer に接続。標準 (rtmpose-s), 2 フレームに 1 回, 自動調整
+uv run live --preset light                   # 軽い (rtmpose-s, 最大 2 人)
+uv run live --preset heavy --stride 1        # 重い (rtmpose-m), 毎フレーム
+uv run live --pose rtmo --size t --stride 1  # バックエンド直接指定
+```
+
+`start_live.bat` は `uv run live --stride 2 --auto-stride` を実行する（uv が無ければ入れる）。
+
+- delaycam サーバに **viewer と同じ形で映像を購読**し、復号 → `stride` フレームに 1 回だけ姿勢推定 + トラッカー →
+  `{"type":"pose", session, ts_us, persons}` を送り返す。表示側は届いた結果を表示フレームに合わせて重ね、推論の間は補間する
+- 遅延再生なので推論の遅れは問題にならない。追いつかない（待ちフレームが溜まる）ときは `--auto-stride` で間隔を自動で広げる
+- 表示側の「骨格」カードから推論間隔とプリセット（light / medium / heavy）を切り替えられる（`analyzer_cmd` を受け取って再設定）
+- プリセットは rtmpose 系: heavy=rtmpose-m、medium=rtmpose-s（最大 6 人）、light=rtmpose-s（最大 2 人）。
+  `max_persons` は大きく写る順に上位だけ姿勢推定して top-down の時間を抑える
+
 ## セットアップ
 
 ```bash
@@ -93,6 +111,7 @@ hoop_analyzer/
   ort_config.py        ONNX Runtime のスレッド設定 (下記)
   video.py             録画フォルダ / 動画ファイルの共通リーダ (PyAV)
   overlay.py           描画と overlay.mp4
+  live.py              ライブアナライザ (delaycam に接続して pose を返す)
   run.py bench.py      CLI
 ```
 

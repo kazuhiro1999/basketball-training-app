@@ -27,3 +27,19 @@ analysis/
 
 # 配布用 zip
 dist/
+
+# 念のため: 鍵・証明書・秘密情報・映像・モデルは場所に関係なく追跡しない
+certs/
+.browser-profile/
+*.pem
+*.key
+*.crt
+*.p12
+.env
+.env.*
+*.h264
+*.ivf
+*.mp4
+*.avi
+*.mov
+*.task

@@ -46,12 +46,13 @@ import qrcode
 import qrcode.image.svg
 from aiohttp import WSMsgType, web
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
 CERT_DIR = BASE / "certs"
 LOG_DIR = BASE / "logs"
 PROFILE_DIR = BASE / ".browser-profile"
+ANALYZER_DIR = BASE.parent / "analyzer"     # 骨格推定プロセス (別フォルダ、無くてもよい)
 LOCALHOST = ("127.0.0.1", "::1")
 
 CHUNK_HDR = struct.Struct("<BBHdI")   # version, flags(bit0=key), reserved, ts_us, duration_us  (16 bytes)
@@ -452,6 +453,87 @@ class Recorder:
         }
 
 
+# ---------------------------------------------------------------- 骨格推定プロセスの起動
+
+def find_uv() -> str | None:
+    exe = shutil.which("uv")
+    if exe:
+        return exe
+    cand = Path(os.path.expandvars(r"%USERPROFILE%\.local\bin\uv.exe"))
+    return str(cand) if cand.exists() else None
+
+
+def analyzer_available() -> bool:
+    return (ANALYZER_DIR / "pyproject.toml").exists() and find_uv() is not None
+
+
+class AnalyzerProcess:
+    """表示画面から `uv run live` を起動/停止する。出力は logs/analyzer-YYYYMMDD.log へ。"""
+
+    def __init__(self) -> None:
+        self.proc: subprocess.Popen | None = None
+        self.state = "stopped"          # stopped / starting / running / exited / unavailable
+        self.message = ""
+        self.log_path: Path | None = None
+
+    def status(self) -> dict:
+        state = self.state
+        if state in ("stopped", "exited") and not analyzer_available():
+            state = "unavailable"
+        return {"state": state, "message": self.message, "dir": str(ANALYZER_DIR),
+                "log": str(self.log_path) if self.log_path else None}
+
+    def start(self, preset: str | None = None, stride: int | None = None) -> str:
+        if self.proc is not None and self.proc.poll() is None:
+            return "すでに起動しています"
+        uv = find_uv()
+        if not analyzer_available():
+            self.state = "unavailable"
+            self.message = f"{ANALYZER_DIR} が見つかりません" if uv else "uv が見つかりません"
+            return self.message
+        LOG_DIR.mkdir(exist_ok=True)
+        self.log_path = LOG_DIR / f"analyzer-{time.strftime('%Y%m%d')}.log"
+        args = [uv, "run", "live", "--url", f"ws://127.0.0.1:{CURRENT_HTTP_PORT}/ws/analyzer"]
+        if preset:
+            args += ["--preset", preset]
+        args += ["--stride", str(stride if stride and stride > 0 else 2)]
+        if not stride:
+            args.append("--auto-stride")
+        logf = open(self.log_path, "a", encoding="utf-8", buffering=1)
+        logf.write(f"\n===== {iso_now()} 起動: {' '.join(args)}\n")
+        self.proc = subprocess.Popen(
+            args, cwd=str(ANALYZER_DIR), stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.state = "starting"
+        self.message = "モデルを読み込んでいます…"
+        log(f"骨格推定を起動: {' '.join(args)}  (ログ: {self.log_path})")
+        return ""
+
+    def stop(self) -> None:
+        if self.proc is not None and self.proc.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], capture_output=True)
+            log("骨格推定を停止しました")
+        self.proc = None
+        self.state = "stopped"
+        self.message = ""
+
+    def poll(self) -> bool:
+        """終了を検知したら True。"""
+        if self.proc is None or self.proc.poll() is None:
+            return False
+        code = self.proc.returncode
+        self.proc = None
+        if self.state != "stopped":
+            self.state = "exited"
+            self.message = f"終了しました (コード {code})。詳しくは {self.log_path.name if self.log_path else 'logs'}"
+            log(f"骨格推定プロセスが終了しました (コード {code})")
+            return True
+        return False
+
+
+CURRENT_HTTP_PORT = 8080    # run() で実際の値に更新する
+
+
 # ---------------------------------------------------------------- 中継ハブ
 
 class Hub:
@@ -459,6 +541,7 @@ class Hub:
 
     def __init__(self, recorder: Recorder) -> None:
         self.recorder = recorder
+        self.analyzer_proc = AnalyzerProcess()
         self.cam: web.WebSocketResponse | None = None
         self.cam_queue: asyncio.Queue | None = None
         self.viewers: dict[web.WebSocketResponse, asyncio.Queue] = {}
@@ -482,7 +565,8 @@ class Hub:
                 "urls": self.all_urls,
                 "viewers": len(self.viewers),
                 "recording": self.recorder.status(),
-                "analyzer": self.analyzer_status if self.analyzers else None,
+                "analyzer": {**self.analyzer_proc.status(),
+                             **({"live": self.analyzer_status} if self.analyzers and self.analyzer_status else {})},
                 "version": VERSION,
             }
         )
@@ -622,6 +706,21 @@ async def ws_view(request: web.Request) -> web.StreamResponse:
                 elif t == "event":
                     ev = {k: v for k, v in obj.items() if k != "type"}
                     rec.log_event({"type": "ui", "remote": request.remote, **ev})
+                elif t == "analyzer_ctl":
+                    # 骨格推定プロセスの起動/停止 (PC 本体の画面からのみ)
+                    if not is_local:
+                        q.put_nowait(json.dumps({"type": "toast", "text": "骨格推定の起動は PC 本体の画面からのみ操作できます"}))
+                        continue
+                    if obj.get("action") == "start":
+                        err = hub.analyzer_proc.start(obj.get("preset"), obj.get("stride"))
+                        if err:
+                            q.put_nowait(json.dumps({"type": "toast", "text": err}))
+                    else:
+                        hub.analyzer_proc.stop()
+                        for aws in list(hub.analyzers):
+                            await aws.close(code=4001, message=b"stopped by viewer")
+                    hub.broadcast_status()
+                    rec.log_event({"type": "ui", "remote": request.remote, "action": "analyzer_" + str(obj.get("action"))})
                 elif t == "analyzer_cmd":
                     # 骨格推定の設定変更 (推論間隔・プリセット) を表示側からアナライザへ中継
                     if not is_local:
@@ -650,6 +749,8 @@ async def ws_analyzer(request: web.Request) -> web.StreamResponse:
     q: asyncio.Queue = asyncio.Queue(maxsize=900)
     hub.analyzers[ws] = q
     sender = asyncio.create_task(_sender(ws, q))
+    hub.analyzer_proc.state = "running"
+    hub.analyzer_proc.message = ""
     log(f"アナライザ接続: {request.remote}")
     rec.log_event({"type": "analyzer_connect", "remote": request.remote})
     q.put_nowait(hub.status_json())
@@ -676,6 +777,8 @@ async def ws_analyzer(request: web.Request) -> web.StreamResponse:
         hub.analyzers.pop(ws, None)
         if not hub.analyzers:
             hub.analyzer_status = None
+            if hub.analyzer_proc.state == "running":
+                hub.analyzer_proc.state = "starting" if (hub.analyzer_proc.proc and hub.analyzer_proc.proc.poll() is None) else "stopped"
         sender.cancel()
         hub.broadcast_status()
         log(f"アナライザ切断: {request.remote}")
@@ -711,7 +814,8 @@ async def info(request: web.Request) -> web.StreamResponse:
             "rx_bytes": hub.rx_bytes,
             "dropped": hub.dropped,
             "recording": hub.recorder.status(),
-            "analyzer": hub.analyzer_status if hub.analyzers else None,
+            "analyzer": {**hub.analyzer_proc.status(),
+                         **({"live": hub.analyzer_status} if hub.analyzers and hub.analyzer_status else {})},
         }
     )
 
@@ -729,6 +833,7 @@ async def quit_app(request: web.Request) -> web.StreamResponse:
 
 async def shutdown(hub: Hub) -> None:
     hub.recorder.stop("quit")
+    hub.analyzer_proc.stop()
     await asyncio.get_running_loop().run_in_executor(None, close_viewer, hub)
     if hub.stop_event:
         hub.stop_event.set()
@@ -826,6 +931,8 @@ async def stats_loop(hub: Hub) -> None:
             )
             rec.log_event({"type": "stats", "rx_fps": f / 5, "rx_mbps": round(b * 8 / 5 / 1e6, 3),
                            "viewers": len(hub.viewers), "dropped": hub.dropped})
+        if hub.analyzer_proc.poll():
+            hub.broadcast_status()
         if rec.active:
             rec.flush()
             if rec.free_bytes() < MIN_FREE_BYTES:
@@ -840,6 +947,8 @@ async def run(args: argparse.Namespace) -> None:
     if not ips:
         ips = ["127.0.0.1"]
 
+    global CURRENT_HTTP_PORT
+    CURRENT_HTTP_PORT = args.http_port
     recorder = Recorder(Path(args.rec_dir).expanduser().resolve(), args.preroll)
     hub = Hub(recorder)
     scheme, port = ("http", args.http_port) if args.no_tls else ("https", args.https_port)
@@ -865,6 +974,7 @@ async def run(args: argparse.Namespace) -> None:
     if len(hub.all_urls) > 1:
         print("  他の候補        : " + ", ".join(hub.all_urls[1:]))
     print(f"  録画の保存先     : {recorder.rec_dir}  (空き {recorder.free_bytes() / 1e9:.1f} GB)")
+    print(f"  骨格推定         : {'画面の「骨格」から起動できます' if analyzer_available() else '利用不可 (analyzer フォルダか uv が見つかりません)'}")
     if not args.no_tls:
         print("  ※ スマホで証明書の警告が出たら「詳細設定」→「アクセスする」")
     else:
@@ -877,6 +987,10 @@ async def run(args: argparse.Namespace) -> None:
     log(f"起動 v{VERSION}  rec_dir={recorder.rec_dir}")
 
     hub.stop_event = asyncio.Event()
+    if args.pose:
+        err = hub.analyzer_proc.start(args.pose, None)
+        if err:
+            log(f"骨格推定を起動できません: {err}")
     asyncio.get_running_loop().create_task(stats_loop(hub))
     if args.kiosk or args.open:
         hub.viewer_proc = launch_viewer(view_url, args.kiosk)
@@ -886,6 +1000,7 @@ async def run(args: argparse.Namespace) -> None:
         log("終了します")
     finally:
         recorder.stop("shutdown")
+        hub.analyzer_proc.stop()
         await runner.cleanup()
 
 
@@ -900,6 +1015,8 @@ def main() -> None:
     p.add_argument("--kiosk", action="store_true", help="表示ページを全画面ブラウザで自動起動")
     p.add_argument("--open", action="store_true", help="表示ページを既定ブラウザで開く")
     p.add_argument("--no-qr", action="store_true", help="ターミナルにQRを描かない")
+    p.add_argument("--pose", nargs="?", const="medium", default=None, choices=["light", "medium", "heavy"],
+                   help="起動時に骨格推定も立ち上げる (既定のプリセットは medium)")
     p.add_argument("--rec-dir", default=str(BASE / "recordings"), help="録画の保存先 (既定 delaycam/recordings)")
     p.add_argument("--preroll", type=float, default=30, help="REC 開始時に遡って保存する秒数 (既定 30)")
     args = p.parse_args()

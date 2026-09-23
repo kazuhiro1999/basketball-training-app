@@ -13,14 +13,14 @@
 
   /* ---- HUD ---- */
   #delay { position: fixed; top: 2vh; right: 2vw; font: bold 9vh/1 ui-monospace, monospace; text-shadow: 0 0 8px #000, 0 0 3px #000; }
-  #delay.paused { color: #ff5; } #delay.slow { color: #5cf; }
+  #delay.paused { color: #ff5; } #delay.slow { color: #5cf; } #delay.filling { color: #fa6; }
   #delay small { font-size: 3vh; opacity: .8; margin-left: .5vw; }
   #status { position: fixed; left: 1vw; bottom: 1vh; font: 2vh/1.4 ui-monospace, monospace; opacity: .75; text-shadow: 0 0 4px #000; white-space: pre; }
   #conn { position: fixed; top: 2vh; left: 2vw; font: 2.5vh system-ui; padding: .5vh 1vw; border-radius: 1vh; background: #c33; display: none; }
   #rec { position: fixed; top: 2vh; left: 2vw; font: bold 3.2vh/1 ui-monospace, monospace; color: #f44; text-shadow: 0 0 6px #000; display: none; }
   #rec .dot { display: inline-block; width: 2.2vh; height: 2.2vh; border-radius: 50%; background: #f22; margin-right: .8vw; vertical-align: -.2vh; animation: blink 1.2s infinite; }
   @keyframes blink { 50% { opacity: .25; } }
-  #toast { position: fixed; left: 50%; bottom: 12vh; transform: translateX(-50%); font-size: 2.6vh; padding: 1vh 2vw; border-radius: 1vh; background: rgba(40,40,40,.9); border: 1px solid #666; display: none; }
+  #toast { position: fixed; left: 50%; bottom: 12vh; transform: translateX(-50%); font-size: 2.6vh; padding: 1vh 2vw; border-radius: 1vh; background: rgba(40,40,40,.92); border: 1px solid #666; display: none; max-width: 80vw; text-align: center; }
 
   /* ---- 操作バー (マウス操作時のみ表示) ---- */
   #bar { position: fixed; left: 50%; bottom: 2vh; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; max-width: 96vw; align-items: center; gap: .5vw; padding: .8vh 1vw; background: rgba(0,0,0,.65); border-radius: 1.2vh; transition: opacity .3s; }
@@ -33,26 +33,16 @@
   #bar button.play:hover { background: #3c8; }
   #bar button.play.paused { background: #d92; }
   #bar button.play.paused:hover { background: #fa3; }
-  #bar button.quit { background: #733; } #bar button.quit:hover { background: #a44; }
   #bar button.rec { border: 2px solid #c33; background: #222; color: #f66; }
-  #bar button.pose.on { background: #27a; }
-  .card .row { display: flex; gap: 1.5vw; align-items: center; justify-content: center; margin: 1vh 0; font-size: 2.4vh; flex-wrap: wrap; }
-  .card .row label { display: flex; align-items: center; gap: .5vw; cursor: pointer; }
-  .card .row select, .card .row input[type=range] { font-size: 2.2vh; }
-  .card .seg { display: inline-flex; border: 1px solid #555; border-radius: .8vh; overflow: hidden; }
-  .card .seg button { font-size: 2.2vh; padding: .6vh 1.2vw; border: 0; background: #222; color: #ccc; }
-  .card .seg button.on { background: #27a; color: #fff; }
   #bar button.rec.on { background: #c33; color: #fff; }
-  .card form { text-align: left; font-size: 2.4vh; display: grid; grid-template-columns: auto 1fr; gap: 1.2vh 1.5vw; align-items: center; margin-top: 1vh; }
-  .card form label { color: #aaa; white-space: nowrap; }
-  .card form select, .card form input { font-size: 2.4vh; padding: .8vh 1vw; background: #222; color: #eee; border: 1px solid #555; border-radius: .6vh; width: 100%; }
-  .card .stat { font: 2.4vh ui-monospace, monospace; color: #9cf; margin-top: 1.5vh; }
+  #bar button.pose.on { background: #27a; }
 
-  /* ---- オーバーレイ (QR / ヘルプ / 終了) ---- */
+  /* ---- オーバーレイ (カード) ---- */
   .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.72); cursor: default; }
   .overlay[hidden] { display: none; }
-  .card { position: relative; background: #1a1a1a; border-radius: 2vh; padding: 4vh 5vw; text-align: center; max-width: 90vw; }
+  .card { position: relative; background: #1a1a1a; border-radius: 2vh; padding: 4vh 5vw; text-align: center; max-width: 92vw; max-height: 92vh; overflow-y: auto; }
   .card h2 { margin: 0 0 2vh; font-size: 4vh; }
+  .card h3 { margin: 2.5vh 0 1vh; font-size: 2.6vh; color: #9cf; font-weight: normal; border-bottom: 1px solid #333; padding-bottom: .5vh; text-align: left; }
   .card .close { position: absolute; top: 1vh; right: 1.2vh; width: 5vh; height: 5vh; border: 0; border-radius: 50%; background: #333; color: #fff; font-size: 3vh; line-height: 1; }
   .card .close:hover { background: #666; }
   .card img { width: 42vmin; height: 42vmin; background: #fff; border-radius: 1vh; padding: 1vmin; }
@@ -61,7 +51,23 @@
   .card .actions { display: flex; gap: 2vw; justify-content: center; margin-top: 3vh; }
   .card .actions button { font-size: 3vh; padding: 1.5vh 3vw; border: 0; border-radius: 1vh; color: #fff; background: #444; }
   .card .actions button.danger { background: #c33; }
-  #help table { font-size: 2.6vh; border-collapse: collapse; text-align: left; }
+  .card .row { display: flex; gap: 1.5vw; align-items: center; justify-content: center; margin: 1.2vh 0; font-size: 2.4vh; flex-wrap: wrap; }
+  .card .row label { display: flex; align-items: center; gap: .5vw; cursor: pointer; }
+  .card .row .lbl { color: #aaa; min-width: 9vw; text-align: right; }
+  .card .row button { font-size: 2.4vh; padding: .9vh 1.6vw; border: 0; border-radius: .8vh; background: #333; color: #fff; }
+  .card .row button:hover { background: #555; }
+  .card .row button.on { background: #2a7; }
+  .card .row button.primary { background: #27a; font-size: 2.8vh; padding: 1.2vh 2.5vw; }
+  .card .row button.primary:hover { background: #38b; }
+  .card .row button.danger { background: #a33; }
+  .card .seg { display: inline-flex; border: 1px solid #555; border-radius: .8vh; overflow: hidden; }
+  .card .seg button { border-radius: 0; background: #222; color: #ccc; }
+  .card .seg button.on { background: #27a; color: #fff; }
+  .card .stat { font: 2.3vh/1.5 ui-monospace, monospace; color: #9cf; margin-top: 1.5vh; }
+  .card form { text-align: left; font-size: 2.4vh; display: grid; grid-template-columns: auto 1fr; gap: 1.2vh 1.5vw; align-items: center; margin-top: 1vh; }
+  .card form label { color: #aaa; white-space: nowrap; }
+  .card form select, .card form input { font-size: 2.4vh; padding: .8vh 1vw; background: #222; color: #eee; border: 1px solid #555; border-radius: .6vh; width: 100%; }
+  #help table { font-size: 2.5vh; border-collapse: collapse; text-align: left; margin: 0 auto; }
   #help td { padding: .4vh 1.5vw; } #help td:first-child { color: #9cf; font-family: ui-monospace, monospace; white-space: nowrap; }
 </style>
 </head>
@@ -74,6 +80,7 @@
 <div id="rec"><span class="dot"></span>REC <span id="rectime">00:00:00</span> <span id="recsize"></span></div>
 <div id="toast"></div>
 
+<!-- メインの操作バー: よく使うものだけ。他は「設定」から -->
 <div id="bar" class="hidden">
   <button data-act="delay-" title="遅延 −1秒 (↓)">−1s</button>
   <button data-act="delay+" title="遅延 +1秒 (↑)">+1s</button>
@@ -82,22 +89,88 @@
   <button data-act="step-" title="1コマ戻す (←)">|◀</button>
   <button data-act="pause" class="play" id="playbtn" title="一時停止 / 再生 (Space)">⏸</button>
   <button data-act="step+" title="1コマ進む (→)">▶|</button>
-  <button data-act="fwd" title="5秒進める (PageDown)">5s ▶▶</button>
   <span class="sep"></span>
   <button data-act="slow" id="slowbtn" title="スロー 0.5× (S)">0.5×</button>
   <button data-act="live" title="設定遅延に復帰 (L)">LIVE</button>
   <span class="sep"></span>
-  <button data-act="posecard" id="posebtn" class="pose" title="骨格表示の設定 (P で ON/OFF)">骨格</button>
-  <button data-act="mirror" id="mirrorbtn" title="左右反転 (M)">鏡</button>
-  <button data-act="rotate" id="rotatebtn" title="表示を90°回転 (R)">回転</button>
-  <button data-act="qr" title="QR表示 (Q)">QR</button>
-  <button data-act="help" title="ヘルプ (H)">?</button>
-  <button data-act="fs" title="全画面 (F)">⛶</button>
-  <span class="sep"></span>
+  <button data-act="pose" id="posebtn" class="pose" title="骨格表示 ON/OFF (P)。設定は「設定」→ 骨格">骨格</button>
   <button data-act="rec" class="rec" id="recbtn" title="録画の開始 / 停止">● REC</button>
-  <button data-act="quit" class="quit" title="終了 (Esc)">終了</button>
+  <button data-act="settings" title="設定 (鏡・回転・骨格・QR・終了など)">⚙ 設定</button>
 </div>
 
+<!-- 設定 -->
+<div id="settings" class="overlay" hidden>
+  <div class="card">
+    <button class="close" data-close="settings" title="閉じる">×</button>
+    <h2>設定</h2>
+
+    <h3>表示</h3>
+    <div class="row">
+      <button data-act="mirror" id="mirrorbtn" title="左右反転 (M)">鏡 左右反転</button>
+      <button data-act="rotate" id="rotatebtn" title="90°回転 (R)">回転</button>
+      <button data-act="fs" title="全画面 (F)">⛶ 全画面</button>
+    </div>
+
+    <h3>骨格表示</h3>
+    <div class="row">
+      <button data-act="pose" id="posebtn2">骨格 ON/OFF</button>
+      <button data-act="posecard" class="primary">骨格の設定・起動…</button>
+    </div>
+    <div class="stat" id="pose_stat_s"></div>
+
+    <h3>カメラ・その他</h3>
+    <div class="row">
+      <button data-act="qr">QR コード</button>
+      <button data-act="help">ヘルプ (操作一覧)</button>
+      <button data-act="quit" class="danger">終了</button>
+    </div>
+    <div class="hint" id="settings_hint"></div>
+  </div>
+</div>
+
+<!-- 骨格 -->
+<div id="posecard" class="overlay" hidden>
+  <div class="card">
+    <button class="close" data-close="posecard" title="閉じる">×</button>
+    <h2>骨格表示</h2>
+
+    <div class="row">
+      <button id="pose_launch" class="primary">骨格推定を起動</button>
+      <span id="pose_launch_note" class="hint"></span>
+    </div>
+    <div class="stat" id="pose_stat">アナライザ未接続</div>
+
+    <h3>重さの設定（アナライザ）</h3>
+    <div class="row">
+      <span class="lbl">推論間隔</span>
+      <span class="seg" id="pose_stride">
+        <button data-stride="1">毎フレーム</button><button data-stride="2">2</button><button data-stride="3">3</button><button data-stride="4">4</button><button data-stride="0">自動</button>
+      </span>
+    </div>
+    <div class="row">
+      <span class="lbl">モデル</span>
+      <span class="seg" id="pose_preset">
+        <button data-preset="light">軽い</button><button data-preset="medium">標準</button><button data-preset="heavy">重い</button>
+      </span>
+    </div>
+
+    <h3>見た目</h3>
+    <div class="row">
+      <label><input type="checkbox" id="pose_enabled"> 表示する (P)</label>
+      <label><input type="checkbox" id="pose_interp"> 推論の間を補間</label>
+      <label><input type="checkbox" id="pose_id"> ID を表示</label>
+      <label><input type="checkbox" id="pose_box"> 枠を表示</label>
+    </div>
+    <div class="row">
+      <span class="lbl">線の太さ</span><input type="range" id="pose_lw" min="1" max="8" step="1">
+    </div>
+
+    <div class="hint" style="margin-top:2vh">骨格推定は別プロセスで動きます（この画面から起動/停止できます）。<br>
+      推論間隔を空けるほど軽くなり、間は前後の結果から補間されます。「自動」は処理が追いつかない時だけ間隔を広げます。</div>
+  </div>
+</div>
+
+<!-- QR -->
 <div id="qr" class="overlay" hidden>
   <div class="card">
     <button class="close" data-close="qr" title="閉じる">×</button>
@@ -108,30 +181,7 @@
   </div>
 </div>
 
-<div id="help" class="overlay" hidden>
-  <div class="card">
-    <button class="close" data-close="help" title="閉じる">×</button>
-    <h2>操作</h2>
-    <table>
-      <tr><td>↑ / ↓</td><td>遅延を +1秒 / −1秒</td></tr>
-      <tr><td>Space</td><td>一時停止 / 再生</td></tr>
-      <tr><td>← / →</td><td>1コマ戻す / 進める（停止中）</td></tr>
-      <tr><td>PageUp / PageDown</td><td>5秒戻す / 進める</td></tr>
-      <tr><td>S</td><td>スロー再生 0.5× の切替</td></tr>
-      <tr><td>L</td><td>設定した遅延秒数に復帰して再生</td></tr>
-      <tr><td>P</td><td>骨格表示の ON/OFF（設定は「骨格」ボタン）</td></tr>
-      <tr><td>M</td><td>左右反転（鏡）</td></tr>
-      <tr><td>R</td><td>表示を90°回転（縦置きディスプレイ用）</td></tr>
-      <tr><td>F</td><td>全画面</td></tr>
-      <tr><td>Q</td><td>QRコード表示</td></tr>
-      <tr><td>H</td><td>このヘルプ</td></tr>
-      <tr><td>REC ボタン</td><td>録画の開始 / 停止（この PC の画面からのみ）</td></tr>
-      <tr><td>Esc</td><td>ウィンドウを閉じる / 終了</td></tr>
-    </table>
-    <div class="hint" style="margin-top:2vh">URL に ?delay=10 を付けると初期遅延を変更できます。<br>表示の遅延秒数は「スマホ→PC の最短伝送時間」を除いた値です（実際は +0.1〜0.3 秒程度）。</div>
-  </div>
-</div>
-
+<!-- 録画 -->
 <div id="reccard" class="overlay" hidden>
   <div class="card">
     <button class="close" data-close="reccard" title="閉じる">×</button>
@@ -165,41 +215,36 @@
   </div>
 </div>
 
-<div id="posecard" class="overlay" hidden>
+<!-- ヘルプ -->
+<div id="help" class="overlay" hidden>
   <div class="card">
-    <button class="close" data-close="posecard" title="閉じる">×</button>
-    <h2>骨格表示</h2>
-    <div class="row">
-      <label><input type="checkbox" id="pose_enabled"> 表示する (P)</label>
-      <label><input type="checkbox" id="pose_interp"> 推論の間を補間</label>
-      <label><input type="checkbox" id="pose_id"> ID を表示</label>
-      <label><input type="checkbox" id="pose_box"> 枠を表示</label>
-    </div>
-    <div class="row">
-      <span>線の太さ</span><input type="range" id="pose_lw" min="1" max="8" step="1">
-    </div>
-    <div class="row">
-      <span>推論間隔</span>
-      <span class="seg" id="pose_stride">
-        <button data-stride="1">毎フレーム</button><button data-stride="2">2</button><button data-stride="3">3</button><button data-stride="4">4</button><button data-stride="0">自動</button>
-      </span>
-    </div>
-    <div class="row">
-      <span>モデル</span>
-      <span class="seg" id="pose_preset">
-        <button data-preset="light">軽い</button><button data-preset="medium">標準</button><button data-preset="heavy">重い</button>
-      </span>
-    </div>
-    <div class="stat" id="pose_stat">アナライザ未接続</div>
-    <div class="hint">骨格推定は別プロセス (analyzer/start_live.bat) が行い、この画面は届いた結果を重ねるだけです。<br>
-      推論間隔を空けるほど軽くなり、間は前後の結果から補間されます。「自動」は処理が追いつかない時だけ間隔を広げます。</div>
+    <button class="close" data-close="help" title="閉じる">×</button>
+    <h2>操作</h2>
+    <table>
+      <tr><td>↑ / ↓</td><td>遅延を +1秒 / −1秒</td></tr>
+      <tr><td>Space</td><td>一時停止 / 再生</td></tr>
+      <tr><td>← / →</td><td>1コマ戻す / 進める（停止中）</td></tr>
+      <tr><td>PageUp / PageDown</td><td>5秒戻す / 進める</td></tr>
+      <tr><td>S</td><td>スロー再生 0.5× の切替</td></tr>
+      <tr><td>L</td><td>設定した遅延秒数に復帰して再生</td></tr>
+      <tr><td>P</td><td>骨格表示の ON/OFF</td></tr>
+      <tr><td>M</td><td>左右反転（鏡）</td></tr>
+      <tr><td>R</td><td>表示を90°回転（縦置きディスプレイ用）</td></tr>
+      <tr><td>F</td><td>全画面</td></tr>
+      <tr><td>Q</td><td>QRコード表示</td></tr>
+      <tr><td>H</td><td>このヘルプ</td></tr>
+      <tr><td>,</td><td>設定</td></tr>
+      <tr><td>Esc</td><td>開いている画面を閉じる / 終了</td></tr>
+    </table>
+    <div class="hint" style="margin-top:2vh">URL に ?delay=10 を付けると初期遅延を変更できます。<br>表示の遅延秒数は実際に映っているフレームの遅れです（バッファが足りない間は「蓄積中」）。</div>
   </div>
 </div>
 
+<!-- 終了 -->
 <div id="quit" class="overlay" hidden>
   <div class="card">
     <h2>DelayCam を終了しますか？</h2>
-    <div class="hint">この画面を閉じ、サーバも停止します。<br>スマホ側は「停止」を押してください。</div>
+    <div class="hint">この画面を閉じ、サーバと骨格推定も停止します。<br>スマホ側は「停止」を押してください。</div>
     <div class="actions">
       <button data-close="quit">キャンセル</button>
       <button class="danger" id="quitok">終了する (Enter)</button>

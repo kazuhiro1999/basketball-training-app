@@ -117,6 +117,14 @@ const PoseOverlay = (() => {
     return true;
   }
 
+  // 表示位置 (ts) がまだ推論済みの範囲に届いていない時、あと何秒で骨格が出るか
+  function waitSec(session, ts) {
+    const arr = store.get(session);
+    if (!arr || !arr.length || ts == null) return null;
+    const first = arr[0].ts_us;
+    return ts < first ? (first - ts) / 1e6 : null;
+  }
+
   function toggle() { settings.enabled = !settings.enabled; save(); return settings.enabled; }
   function set(key, value) { settings[key] = value; save(); }
   function status() {
@@ -124,5 +132,5 @@ const PoseOverlay = (() => {
     return { received: stats.received, lastTs: stats.lastTs, ageSec: age, sessions: store.size };
   }
 
-  return { onMessage, draw, personsAt, toggle, set, settings, status };
+  return { onMessage, draw, personsAt, waitSec, toggle, set, settings, status };
 })();

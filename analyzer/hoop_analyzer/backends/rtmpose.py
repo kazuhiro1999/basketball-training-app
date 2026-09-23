@@ -9,7 +9,7 @@ import numpy as np
 
 from ..ort_config import retune_rtmlib
 from ..types import Person
-from .base import PoseBackend
+from .base import PoseBackend, bbox_from_keypoints
 
 
 class RTMPoseBackend(PoseBackend):
@@ -20,9 +20,14 @@ class RTMPoseBackend(PoseBackend):
     _MODE = {"s": "lightweight", "m": "balanced", "x": "performance"}
 
     def __init__(self, size: str | None = None, det_thr: float = 0.5, kp_thr: float = 0.3,
-                 max_persons: int = 0) -> None:
+                 max_persons: int = 0, det_every: int = 1) -> None:
         super().__init__(size, det_thr, kp_thr)
         self.max_persons = max_persons      # 0 = 制限なし。ライブ用: 大きく写る順に上位だけ姿勢推定して時間を抑える
+        # 人検出は姿勢推定より重い (実測で 1 回 110ms 対 1 人 20ms)。ライブでは毎回検出せず、
+        # 間のフレームは前回の姿勢から作った枠を使い回す。新しく入ってきた人は次の検出で拾う
+        self.det_every = max(1, det_every)
+        self._since_det = 10**9
+        self._last_boxes: np.ndarray | None = None
         from rtmlib import RTMPose, YOLOX
         from rtmlib.tools.solution.body import Body
 
@@ -49,8 +54,16 @@ class RTMPoseBackend(PoseBackend):
         return np.asarray(boxes, dtype=np.float32).reshape(-1, 4), None
 
     def infer(self, frame_bgr: np.ndarray, ts_ms: float | None = None) -> list[Person]:
-        bboxes, det_scores = self._detect(frame_bgr)
+        reused = self.det_every > 1 and self._since_det < self.det_every and self._last_boxes is not None and len(self._last_boxes)
+        if reused:
+            bboxes, det_scores = self._last_boxes, None
+            self._since_det += 1
+        else:
+            bboxes, det_scores = self._detect(frame_bgr)
+            self._since_det = 1
+            self._last_boxes = bboxes if len(bboxes) else None
         if len(bboxes) == 0:
+            self._last_boxes = None
             return []
         if self.max_persons and len(bboxes) > self.max_persons:
             order = np.argsort(-(bboxes[:, 3] - bboxes[:, 1]))[: self.max_persons]
@@ -65,12 +78,16 @@ class RTMPoseBackend(PoseBackend):
                 keypoints=np.asarray(kp, dtype=np.float32),
                 kp_scores=np.asarray(sc, dtype=np.float32),
             ))
+        if self.det_every > 1 and persons:
+            # 次のフレームで使い回す枠は、今回の骨格から作り直す (人が動いてもついていく)
+            self._last_boxes = np.array([bbox_from_keypoints(p.keypoints, p.kp_scores, self.kp_thr, pad=0.25)
+                                         for p in persons], dtype=np.float32)
         return persons
 
     def describe(self) -> dict:
         d = super().describe()
         d.update({
-            "max_persons": self.max_persons,
+            "max_persons": self.max_persons, "det_every": self.det_every,
             "det_model": self.cfg["det"].rsplit("/", 1)[-1], "det_input": list(self.cfg["det_input_size"]),
             "pose_model": self.cfg["pose"].rsplit("/", 1)[-1], "pose_input": list(self.cfg["pose_input_size"]),
         })

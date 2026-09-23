@@ -34,10 +34,12 @@ from .tracking import create_tracker
 CHUNK_HDR = struct.Struct("<BBHdI")   # version, flags(bit0=key), reserved, ts_us, duration_us
 
 # 重い ← → 軽い。rtmpose を軸にしたのは、one-stage (rtmo/yolo) が小さく写る人を落としやすいため。
+# det_every: 人検出は姿勢推定より重いので、ライブでは数回に 1 回だけ検出して間は枠を使い回す。
+# 括弧内はノート PC (i7-14650HX, 768x576, 4-6人) での定常実測値
 PRESETS = {
-    "heavy": {"pose": "rtmpose", "size": "m", "max_persons": 6},
-    "medium": {"pose": "rtmpose", "size": "s", "max_persons": 6},
-    "light": {"pose": "rtmpose", "size": "s", "max_persons": 2},
+    "heavy": {"pose": "rtmpose", "size": "m", "max_persons": 6, "det_every": 2},    # 約 1.7 回/秒
+    "medium": {"pose": "rtmpose", "size": "s", "max_persons": 6, "det_every": 3},   # 約 5.5 回/秒
+    "light": {"pose": "rtmpose", "size": "s", "max_persons": 2, "det_every": 4},    # 約 11 回/秒
 }
 
 
@@ -91,15 +93,19 @@ class Worker(threading.Thread):
             cfg["size"] = a.size
         if a.max_persons:
             cfg["max_persons"] = a.max_persons
+        if a.det_every:
+            cfg["det_every"] = a.det_every
         kw = {"det_thr": a.det_thr, "kp_thr": a.kp_thr}
         if cfg["pose"] == "rtmpose":
             kw["max_persons"] = cfg.get("max_persons", 6)
+            kw["det_every"] = cfg.get("det_every", 1)
         t0 = time.perf_counter()
         pose = create_pose_backend(cfg["pose"], size=cfg["size"], **kw)
         pose.warmup((720, 1280))
         self.pose = pose
         self.tracker = create_tracker(a.tracker, fps=30 / max(1, self.stride))
         self.backend_desc = f"{pose.name}-{pose.size}" + (f" (最大{kw['max_persons']}人)" if "max_persons" in kw else "")
+        self.preset_label = {"heavy": "重い", "medium": "標準", "light": "軽い"}.get(self.preset, self.preset)
         print(f"モデル読み込み: {self.backend_desc}  {time.perf_counter() - t0:.1f}s", flush=True)
 
     def request(self, cmd: dict) -> None:
@@ -121,7 +127,7 @@ class Worker(threading.Thread):
         if "preset" in cmd and cmd["preset"] in PRESETS and cmd["preset"] != self.preset:
             self.preset = cmd["preset"]
             self.args.pose = self.args.size = None
-            self.args.max_persons = 0
+            self.args.max_persons = self.args.det_every = 0
             try:
                 self._load_backend()
             except Exception as e:  # noqa: BLE001
@@ -284,6 +290,10 @@ async def run(args: argparse.Namespace) -> None:
                                 break
                     finally:
                         send_task.cancel()
+                    if ws.close_code == 4001:      # 表示画面から停止された
+                        print("停止されました", flush=True)
+                        worker.stop_flag.set()
+                        break
         except (aiohttp.ClientError, OSError) as e:
             print(f"接続できません ({e.__class__.__name__}) → 3 秒後に再接続", flush=True)
         if worker.stop_flag.is_set():
@@ -300,6 +310,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--pose", default=None, choices=[*REGISTRY], help="バックエンドを直接指定 (プリセットより優先)")
     p.add_argument("--size", default=None)
     p.add_argument("--max-persons", type=int, default=0, help="rtmpose: 姿勢推定する人数の上限 (大きく写る順)")
+    p.add_argument("--det-every", type=int, default=0, help="rtmpose: 何回に 1 回 人検出をするか (0=プリセットのまま)")
     p.add_argument("--stride", type=int, default=2, help="何フレームに 1 回推論するか (0=自動)")
     p.add_argument("--auto-stride", action="store_true", help="追いつかない時に自動で間隔を広げる (--stride は下限)")
     p.add_argument("--tracker", default="simple", choices=["simple", "bytetrack", "ocsort", "sort", "none"])

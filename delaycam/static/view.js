@@ -15,6 +15,7 @@ const MIN_TARGET = 1, MAX_TARGET = 60;   // ↑↓ で設定できる遅延秒�
 const HISTORY_MS = 90_000;       // 再生済みチャンクを残す長さ (巻き戻し用)
 const MAX_ITEMS = 30 * 60 * 12;  // 一時停止しっぱなし等でのメモリ上限 (約12分)
 const OFFSET_WINDOW_MS = 60_000; // オフセット(最短伝送時間)を見直す周期。スマホとPCの時計のずれを吸収する
+const FILL_RATE = 0.8;           // 設定遅延に届いていない時の再生速度 (ゆっくり再生して遅延を増やす)
 
 const params = new URLSearchParams(location.search);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -28,7 +29,10 @@ const ui = {
   playbtn: $('playbtn'), slowbtn: $('slowbtn'), mirrorbtn: $('mirrorbtn'), rotatebtn: $('rotatebtn'),
   rec: $('rec'), rectime: $('rectime'), recsize: $('recsize'), recbtn: $('recbtn'), reccard: $('reccard'),
   rectitle: $('rectitle'), recform: $('recform'), recstat: $('recstat'), recok: $('recok'), toast: $('toast'),
-  posebtn: $('posebtn'), posecard: $('posecard'), poseStat: $('pose_stat'),
+  posebtn: $('posebtn'), posebtn2: $('posebtn2'), posecard: $('posecard'), poseStat: $('pose_stat'),
+  poseStatS: $('pose_stat_s'), poseLaunch: $('pose_launch'), poseLaunchNote: $('pose_launch_note'),
+  settings: $('settings'), settingsHint: $('settings_hint'),
+  mirrorbtn: $('mirrorbtn'), rotatebtn: $('rotatebtn'),
 };
 
 let targetDelay = clamp(parseFloat(params.get('delay')) || 15, 0.5, MAX_TARGET);
@@ -45,8 +49,11 @@ let decoder = null, curSession = null, needKey = true, suppressBeforeTs = -1, la
 let inSession = null;     // 受信中のセッション
 let camConnected = false, camUrl = '', ws = null;
 let recording = { active: false };   // サーバから届く録画状態
+let serverVersion = '';
 let analyzerStatus = null;           // 骨格推定プロセスの状態 (サーバ経由)
 let lastFrameSession = null;         // 表示中フレームのセッション id (骨格の照合用)
+let lastFrameBase = null;            // 表示中フレームの base (実際の遅延の計算用)
+let filling = false;                 // 設定遅延ぶんのバッファがまだ無く、少し遅めに再生して追いついている最中
 const stats = { rxFrames: 0, rxBytes: 0, decoded: 0, prevRx: 0, prevRxBytes: 0, prevDecoded: 0, rxFps: 0, rxMbps: 0, decFps: 0 };
 
 try {
@@ -81,7 +88,16 @@ function onText(m) {
     if (!camConnected) inSession = null;
     if (camConnected && !was) qrDismissed = false;   // 次に切れた時はまた出す
     if (m.recording) { recording = m.recording; updateRecUi(); }
+    if (m.version) serverVersion = m.version;
+    const wasState = analyzerStatus && analyzerStatus.state;
     analyzerStatus = m.analyzer || null;
+    if (analyzerStatus && analyzerStatus.state !== wasState) {
+      if (analyzerStatus.state === 'running') {
+        const w = poseWait();
+        toast(w ? `骨格推定が起動しました（遅延再生なので、あと ${w.toFixed(0)} 秒で骨格が出ます）` : '骨格推定が起動しました', 5000);
+      }
+      else if (analyzerStatus.state === 'exited') toast(analyzerStatus.message || '骨格推定が終了しました', 5000);
+    }
     updatePoseCard();
     updateOverlay();
   } else if (m.type === 'pose') {
@@ -152,6 +168,7 @@ function onFrame(frame) {
   if (lastFrame) lastFrame.close();
   lastFrame = frame;
   lastFrameSession = curSession ? curSession.id : null;
+  lastFrameBase = curSession && curSession.offset !== null ? frame.timestamp / 1000 + curSession.offset : null;
   stats.decoded++;
   drawFrame();
 }
@@ -193,7 +210,16 @@ function tick() {
   const dt = now - lastTick;
   lastTick = now;
   if (pos === null) pos = now - targetDelay * 1000;
-  else if (rate > 0) pos += dt * rate;
+  else if (rate > 0) {
+    // 設定遅延に足りない (pos が目標より進んでいる) 間は少し遅めに再生して、目標までゆっくり戻す。
+    // バッファが無い所へ飛ばすと映像が止まるので、こうして自然に追いつかせる
+    let r = rate;
+    if (filling && rate === 1) {
+      const want = now - targetDelay * 1000;
+      if (pos > want + 50) r = FILL_RATE; else filling = false;
+    }
+    pos += dt * r;
+  }
   const liveEdge = now - MIN_DELAY_MS;
   if (pos > liveEdge) pos = liveEdge;
 
@@ -249,6 +275,7 @@ function seek(newPos) {
 
 function stepFrame(dir) {
   rate = 0;
+  filling = false;
   let i = playIdx - 1;
   while (i >= 0 && buffer[i].kind !== 'chunk') i--;
   if (i < 0) return;
@@ -263,7 +290,22 @@ function stepFrame(dir) {
 function setTargetDelay(v) {
   targetDelay = clamp(v, MIN_TARGET, MAX_TARGET);
   rate = 1;
-  seek(performance.now() - targetDelay * 1000);
+  goToTarget();
+}
+
+// 設定遅延の位置へ移動する。まだそこまでバッファが無ければ「一番古いフレーム」から始め、
+// 以降ゆっくり再生して設定遅延に追いつく (filling)。以前はここで黙って遅延が縮んでいた
+function goToTarget() {
+  const now = performance.now();
+  const want = now - targetDelay * 1000;
+  const oldest = buffer.length ? buffer[0].base : null;
+  if (oldest !== null && want < oldest - 50) {
+    filling = true;
+    seek(oldest);
+  } else {
+    filling = false;
+    seek(want);
+  }
 }
 
 const actions = {
@@ -271,11 +313,11 @@ const actions = {
   'delay-': () => setTargetDelay(Math.ceil(targetDelay) - 1),
   pause: () => { rate = rate === 0 ? 1 : 0; },
   slow: () => { rate = rate === 0.5 ? 1 : 0.5; },
-  live: () => { rate = 1; seek(performance.now() - targetDelay * 1000); },
+  live: () => { rate = 1; goToTarget(); },
   'step-': () => stepFrame(-1),
   'step+': () => stepFrame(+1),
-  back: () => { seek(pos - 5000); },
-  fwd: () => { seek(pos + 5000); },
+  back: () => { filling = false; seek(pos - 5000); },
+  fwd: () => { filling = false; seek(pos + 5000); },
   mirror: () => { mirror = !mirror; savePrefs(); drawFrame(); },
   rotate: () => { rotation = (rotation + 90) % 360; savePrefs(); drawFrame(); },
   qr: () => { if (!ui.qr.hidden) { qrForced = false; qrDismissed = true; } else qrForced = true; updateOverlay(); },
@@ -283,8 +325,20 @@ const actions = {
   fs: () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); },
   quit: () => { ui.quit.hidden = false; },
   rec: () => { openRecCard(); },
-  pose: () => { const on = PoseOverlay.toggle(); toast(on ? '骨格表示 ON' : '骨格表示 OFF', 1200); updatePoseCard(); drawFrame(); },
-  posecard: () => { updatePoseCard(); ui.posecard.hidden = false; },
+  settings: () => { updatePoseCard(); ui.settings.hidden = !ui.settings.hidden; },
+  pose: () => {
+    const on = PoseOverlay.toggle();
+    updatePoseCard(); drawFrame();
+    // ON にしたのに骨格推定が動いていなければ、起動できるカードを開く
+    if (on && !(analyzerStatus && (analyzerStatus.state === 'running' || analyzerStatus.state === 'starting'))) {
+      ui.settings.hidden = true;
+      ui.posecard.hidden = false;
+      toast('骨格推定が起動していません', 2000);
+    } else {
+      toast(on ? '骨格表示 ON' : '骨格表示 OFF', 1200);
+    }
+  },
+  posecard: () => { updatePoseCard(); ui.settings.hidden = true; ui.posecard.hidden = false; },
 };
 
 // 画面操作をサーバに送る (録画中は録画フォルダの events.jsonl、常に logs/ にも残る)。
@@ -312,13 +366,18 @@ function runAction(act, source) {
 const keymap = {
   ArrowUp: 'delay+', ArrowDown: 'delay-', '+': 'delay+', '-': 'delay-', ' ': 'pause',
   ArrowLeft: 'step-', ArrowRight: 'step+', PageUp: 'back', PageDown: 'fwd',
-  s: 'slow', l: 'live', m: 'mirror', r: 'rotate', q: 'qr', h: 'help', f: 'fs', p: 'pose',
+  s: 'slow', l: 'live', m: 'mirror', r: 'rotate', q: 'qr', h: 'help', f: 'fs', p: 'pose', ',': 'settings',
 };
 
-function anyOverlayOpen() { return !ui.qr.hidden || !ui.help.hidden || !ui.quit.hidden || !ui.reccard.hidden || !ui.posecard.hidden; }
+function anyOverlayOpen() {
+  return !ui.qr.hidden || !ui.help.hidden || !ui.quit.hidden || !ui.reccard.hidden || !ui.posecard.hidden || !ui.settings.hidden;
+}
 function closeOverlays() {
   if (!ui.qr.hidden) { qrForced = false; qrDismissed = true; }
-  ui.help.hidden = true; ui.quit.hidden = true; ui.reccard.hidden = true; ui.posecard.hidden = true;
+  ui.help.hidden = true; ui.quit.hidden = true; ui.reccard.hidden = true;
+  // 骨格カードは「設定」から開いた時は設定に戻る
+  if (!ui.posecard.hidden) { ui.posecard.hidden = true; updateOverlay(); return; }
+  ui.settings.hidden = true;
   updateOverlay();
 }
 
@@ -350,10 +409,12 @@ window.addEventListener('keydown', (e) => {
   runAction(act, 'key');
   updateHud();
 });
-ui.bar.addEventListener('click', (e) => {
+function onActionClick(e) {
   const b = e.target.closest('button');
-  if (b && actions[b.dataset.act]) { runAction(b.dataset.act, 'button'); updateHud(); }
-});
+  if (b && b.dataset.act && actions[b.dataset.act]) { runAction(b.dataset.act, 'button'); updateHud(); }
+}
+ui.bar.addEventListener('click', onActionClick);
+ui.settings.addEventListener('click', onActionClick);
 $('quitok').addEventListener('click', doQuit);
 
 // ---------------------------------------------------------------- 録画
@@ -436,21 +497,50 @@ function sendAnalyzerCmd(cmd) {
   if (!ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify({ type: 'analyzer_cmd', ...cmd }));
 }
+ui.poseLaunch.addEventListener('click', () => {
+  const st = analyzerStatus || {};
+  const running = st.state === 'running' || st.state === 'starting';
+  if (!ws || ws.readyState !== 1) { toast('サーバに接続していません'); return; }
+  ws.send(JSON.stringify({ type: 'analyzer_ctl', action: running ? 'stop' : 'start' }));
+  if (!running) { PoseOverlay.set('enabled', true); toast('骨格推定を起動しています… (初回はモデル読み込みに数十秒)', 4000); }
+  updatePoseCard();
+});
+
+function analyzerLine() {
+  const a = analyzerStatus;
+  if (!a) return '状態不明';
+  const live = a.live;
+  if (a.state === 'unavailable') return `利用できません: ${a.message || 'analyzer フォルダか uv が見つかりません'}`;
+  if (a.state === 'starting') return '起動中… (モデルを読み込んでいます)';
+  if (a.state === 'exited') return a.message || '終了しました';
+  if (a.state !== 'running' || !live) return '停止中';
+  const ps = PoseOverlay.status();
+  return `${live.backend}  推論 ${live.infer_fps ?? '?'}fps (${live.infer_ms ?? '?'}ms/回)  実効間隔 ${live.stride}${live.auto_stride ? ' (自動)' : ''}  ` +
+    `待ち ${live.backlog ?? 0}フレーム  人物 ${live.persons ?? '-'}  受信 ${ps.received} 件`;
+}
+
 function updatePoseCard() {
   const st = PoseOverlay.settings;
+  const a = analyzerStatus || {};
+  const live = a.live;
   ui.posebtn.classList.toggle('on', st.enabled);
+  if (ui.posebtn2) ui.posebtn2.classList.toggle('on', st.enabled);
   poseUi.enabled.checked = st.enabled; poseUi.interp.checked = st.interpolate;
   poseUi.id.checked = st.showId; poseUi.box.checked = st.showBox; poseUi.lw.value = st.lineWidth;
-  const a = analyzerStatus;
   for (const b of poseUi.stride.querySelectorAll('button')) {
-    b.classList.toggle('on', !!a && ((a.auto_stride && +b.dataset.stride === 0) || (!a.auto_stride && +b.dataset.stride === a.stride)));
+    b.classList.toggle('on', !!live && ((live.auto_stride && +b.dataset.stride === 0) || (!live.auto_stride && +b.dataset.stride === live.stride)));
   }
-  for (const b of poseUi.preset.querySelectorAll('button')) b.classList.toggle('on', !!a && b.dataset.preset === a.preset);
-  if (!a) { ui.poseStat.textContent = 'アナライザ未接続 (analyzer/start_live.bat で起動)'; return; }
-  const ps = PoseOverlay.status();
-  ui.poseStat.textContent =
-    `${a.backend}  推論 ${a.infer_fps ?? '?'}fps (${a.infer_ms ?? '?'}ms/回)  実効間隔 ${a.stride}${a.auto_stride ? ' (自動)' : ''}  ` +
-    `待ち ${a.backlog ?? 0}フレーム  人物 ${a.persons ?? '-'}  受信 ${ps.received} 件`;
+  for (const b of poseUi.preset.querySelectorAll('button')) b.classList.toggle('on', !!live && b.dataset.preset === live.preset);
+
+  const running = a.state === 'running' || a.state === 'starting';
+  ui.poseLaunch.textContent = running ? '骨格推定を停止' : '骨格推定を起動';
+  ui.poseLaunch.classList.toggle('danger', running);
+  ui.poseLaunch.disabled = a.state === 'unavailable';
+  ui.poseLaunchNote.textContent = a.state === 'unavailable' ? (a.message || '') : (running ? '' : '初回はモデルの読み込みに数十秒かかります');
+  const line = analyzerLine();
+  ui.poseStat.textContent = line;
+  if (ui.poseStatS) ui.poseStatS.textContent = `骨格 ${st.enabled ? 'ON' : 'OFF'} — ${line}`;
+  if (ui.settingsHint) ui.settingsHint.textContent = `DelayCam ${serverVersion || ''}  録画: ${recording.active ? '● 録画中' : '停止中'}  保存先 ${recording.rec_dir || ''}`;
 }
 
 let toastTimer = 0;
@@ -511,6 +601,12 @@ function drawFrame() {
   ctx.restore();
 }
 
+// 骨格が表示フレームに追いつくまでの秒数 (起動直後は遅延ぶんだけ待つ)
+function poseWait() {
+  if (!PoseOverlay.settings.enabled || !lastFrame) return null;
+  return PoseOverlay.waitSec(lastFrameSession, lastFrame.timestamp);
+}
+
 function bufferedAhead() {
   const last = buffer.length ? buffer[buffer.length - 1] : null;
   return last && pos !== null ? Math.max(0, (last.base - pos) / 1000) : 0;
@@ -528,10 +624,12 @@ function updateOverlay() {
 
 function updateHud() {
   const now = performance.now();
-  const eff = pos === null ? targetDelay : (now - pos) / 1000;
+  // 実際に映っているフレームの遅れを出す (バッファ不足で設定どおりに出せない時も嘘をつかない)
+  const eff = lastFrameBase !== null ? (now - lastFrameBase) / 1000
+    : (pos === null ? targetDelay : (now - pos) / 1000);
   ui.delay.innerHTML = `${eff.toFixed(1)}<small>s</small>` +
-    (rate === 0 ? '<small>⏸</small>' : rate === 0.5 ? '<small>0.5×</small>' : '');
-  ui.delay.className = rate === 0 ? 'paused' : rate === 0.5 ? 'slow' : '';
+    (rate === 0 ? '<small>⏸</small>' : rate === 0.5 ? '<small>0.5×</small>' : filling ? '<small>蓄積中</small>' : '');
+  ui.delay.className = rate === 0 ? 'paused' : rate === 0.5 ? 'slow' : filling ? 'filling' : '';
 
   ui.playbtn.textContent = rate === 0 ? '▶' : '⏸';
   ui.playbtn.title = rate === 0 ? '再生 (Space)' : '一時停止 (Space)';
@@ -546,10 +644,12 @@ function updateHud() {
   ui.status.textContent =
     `${camConnected ? '● カメラ接続中' : '○ カメラ未接続'}  受信 ${stats.rxFps}fps ${stats.rxMbps.toFixed(2)}Mbps  表示 ${stats.decFps}fps\n` +
     `${sess ? `${sess.width}×${sess.height} ${sess.codec}` : ''}  設定遅延 ${targetDelay}s  先読み ${bufferedAhead().toFixed(1)}s  巻戻し可 ${hist.toFixed(0)}s` +
-    `${mirror ? '  鏡' : ''}${rotation ? `  回転${rotation}°` : ''}\n` +
-    (analyzerStatus
-      ? `骨格 ${PoseOverlay.settings.enabled ? 'ON' : 'OFF'}  ${analyzerStatus.backend} ${analyzerStatus.infer_fps ?? '?'}fps 間隔${analyzerStatus.stride}${analyzerStatus.auto_stride ? '(自動)' : ''}  待ち${analyzerStatus.backlog ?? 0}`
-      : `骨格 ${PoseOverlay.settings.enabled ? 'ON' : 'OFF'}  (アナライザ未接続)`);
+    `${mirror ? '  鏡' : ''}${rotation ? `  回転${rotation}°` : ''}${filling ? '  (設定遅延まで蓄積中)' : ''}\n` +
+    `骨格 ${PoseOverlay.settings.enabled ? 'ON' : 'OFF'}  ` +
+    (poseWait() !== null ? `あと ${poseWait().toFixed(0)} 秒で映像に追いつきます  ` : '') +
+    (analyzerStatus && analyzerStatus.live
+      ? `${analyzerStatus.live.backend} ${analyzerStatus.live.infer_fps ?? '?'}fps 間隔${analyzerStatus.live.stride}${analyzerStatus.live.auto_stride ? '(自動)' : ''}  待ち${analyzerStatus.live.backlog ?? 0}`
+      : analyzerStatus && analyzerStatus.state === 'starting' ? '(起動中…)' : '(骨格推定は停止中)');
 }
 
 setInterval(() => {
@@ -559,7 +659,7 @@ setInterval(() => {
   updateHud();
   updateOverlay();
   updateRecUi();
-  if (!ui.posecard.hidden) updatePoseCard();
+  if (!ui.posecard.hidden || !ui.settings.hidden) updatePoseCard();
   if (++statsTick % 5 === 0) sendEvent('viewer_stats', { rx_fps: stats.rxFps, dec_fps: stats.decFps, buffered_ahead: bufferedAhead() });
 }, 1000);
 let statsTick = 0;
@@ -570,7 +670,7 @@ if (!('VideoDecoder' in window)) {
   document.body.innerHTML = '<div style="padding:4vh;font-size:4vh">このブラウザは WebCodecs 非対応です。Chrome または Edge で開いてください。</div>';
 } else {
   resize();
-  fetch('/info.json').then((r) => r.json()).then((i) => { camUrl = i.cam_url; camConnected = i.cam_connected; if (i.recording) { recording = i.recording; updateRecUi(); } analyzerStatus = i.analyzer || null; updatePoseCard(); updateOverlay(); }).catch(() => {});
+  fetch('/info.json').then((r) => r.json()).then((i) => { camUrl = i.cam_url; camConnected = i.cam_connected; if (i.recording) { recording = i.recording; updateRecUi(); } analyzerStatus = i.analyzer || null; serverVersion = i.version || ''; updatePoseCard(); updateOverlay(); }).catch(() => {});
   connect();
   updateHud();
   requestAnimationFrame(tick);

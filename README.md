@@ -7,7 +7,7 @@ Analyze and master your shooting form with delayed playback. This app offers rea
 
 | ディレクトリ | 内容 | 状態 |
 |---|---|---|
-| [`delaycam/`](delaycam/) | 遅延ビューワー本体（Python サーバ + スマホ用/PC用 Web ページ）+ 録画・操作ログ + 骨格オーバーレイ表示 | **v1.2** — 使い方は [delaycam/README.md](delaycam/README.md) |
+| [`delaycam/`](delaycam/) | 遅延ビューワー本体（Python サーバ + スマホ用/PC用 Web ページ）+ 録画・操作ログ + 骨格オーバーレイ表示 | **v1.3** — 使い方は [delaycam/README.md](delaycam/README.md) |
 | [`analyzer/`](analyzer/) | 骨格推定（RTMPose / RTMO / YOLO-pose / MediaPipe を差し替え可）・複数人トラッキング・ボール検出。録画のオフライン解析と、遅延再生へのライブ骨格供給（`uv run live`）。ONNX Runtime CPU | **0.2** — 使い方は [analyzer/README.md](analyzer/README.md) |
 
 ## 撮影の前提（v1）
@@ -19,7 +19,19 @@ Analyze and master your shooting form with delayed playback. This app offers rea
 
 ## 起動
 
-`delaycam/start.bat` をダブルクリック（uv が無ければ自動インストール）。
+Windows 10/11 + Chrome か Edge。初回だけインターネット接続が必要（uv・Python・依存パッケージ、骨格推定モデル約 50MB を自動で取得）。
+体育館にネットが無いなら、**事前にネットのある場所で一度起動**しておく。2 回目以降はオフラインで動く。
+
+| ファイル | 内容 |
+|---|---|
+| `delaycam/start.bat` | 遅延再生だけ起動（全画面） |
+| `delaycam/start_with_pose.bat` | 遅延再生 + 骨格表示を同時に起動 |
+
+`start.bat` で起動した場合も、画面の「⚙ 設定」→「骨格の設定・起動…」から骨格推定を後で起動できる。
+スマホは画面に出る QR を Chrome で読み取るだけ。詳しい手順・操作は [delaycam/README.md](delaycam/README.md)。
+
+初回は Windows ファイアウォールの許可（プライベート・パブリック両方）が出る。
+zip をブラウザでダウンロードした場合は bat の実行時に「Windows によって PC が保護されました」→「詳細情報」→「実行」。
 
 ## License
 

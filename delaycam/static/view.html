@@ -36,6 +36,32 @@
   #bar button.rec { border: 2px solid #c33; background: #222; color: #f66; }
   #bar button.rec.on { background: #c33; color: #fff; }
   #bar button.pose.on { background: #27a; }
+  #bar button.replay { border: 2px solid #d92; background: #222; color: #fc6; }
+  #bar button.replay:hover { background: #3a2a10; }
+
+  /* ---- インスタントリプレイ (モーダル) ---- */
+  #replay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.85); cursor: default; }
+  #replay[hidden] { display: none; }
+  #replay .rp { width: 96vw; height: 94vh; display: flex; flex-direction: column; background: #111; border: 2px solid #d92; border-radius: 1.5vh; overflow: hidden; }
+  #replay .rp-head { display: flex; align-items: center; gap: 1.5vw; padding: 1vh 1.5vw; background: #1c1c1c; font-size: 2.4vh; }
+  #replay .rp-head .title { font-weight: bold; color: #fc6; font-size: 2.8vh; }
+
+  #replay .rp-head .close { width: 5vh; height: 5vh; border: 0; border-radius: 50%; background: #333; color: #fff; font-size: 3vh; line-height: 1; }
+  #replay .rp-head .close:hover { background: #666; }
+  #replay canvas { flex: 1; min-height: 0; width: 100%; display: block; background: #000; cursor: pointer; }
+  #replay .rp-seek { width: 100%; margin: 0; height: 3.5vh; accent-color: #fb4; background: #1c1c1c; }
+  #replay .rp-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .6vw; padding: 1vh 1vw; background: #1c1c1c; }
+  #replay .rp-bar button { font-size: 2.4vh; padding: 1vh 1.2vw; border: 0; border-radius: .8vh; background: #333; color: #fff; white-space: nowrap; }
+  #replay .rp-bar button:hover { background: #555; }
+  #replay .rp-bar button.on { background: #27a; }
+  #replay .rp-bar button.play { font-size: 3.6vh; padding: .6vh 2vw; background: #2a7; }
+  #replay .rp-bar button.play.paused { background: #d92; }
+  #replay .rp-bar button.back { background: #444; border: 2px solid #888; }
+  #replay .rp-bar .sep { width: 1px; height: 4vh; background: #555; margin: 0 .3vw; }
+  #replay .rp-bar .seg { display: inline-flex; border: 1px solid #555; border-radius: .8vh; overflow: hidden; }
+  #replay .rp-bar .seg button { border-radius: 0; background: #222; }
+  #replay .rp-bar .seg button.on { background: #27a; }
+  #replay .rp-time { font: 2.6vh ui-monospace, monospace; color: #fc6; margin-left: auto; }
 
   /* ---- オーバーレイ (カード) ---- */
   .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.72); cursor: default; }
@@ -93,6 +119,7 @@
   <button data-act="slow" id="slowbtn" title="スロー 0.5× (S)">0.5×</button>
   <button data-act="live" title="設定遅延に復帰 (L)">LIVE</button>
   <span class="sep"></span>
+  <button data-act="replay" class="replay" id="replaybtn" title="インスタントリプレイ: 直近の映像を見返す (I)">⟲ リプレイ</button>
   <button data-act="pose" id="posebtn" class="pose" title="骨格表示 ON/OFF (P)。設定は「設定」→ 骨格">骨格</button>
   <button data-act="rec" class="rec" id="recbtn" title="録画の開始 / 停止">● REC</button>
   <button data-act="settings" title="設定 (鏡・回転・骨格・QR・終了など)">⚙ 設定</button>
@@ -117,6 +144,14 @@
       <button data-act="posecard" class="primary">骨格の設定・起動…</button>
     </div>
     <div class="stat" id="pose_stat_s"></div>
+
+    <h3>インスタントリプレイ</h3>
+    <div class="row">
+      <span class="lbl">長さ</span>
+      <span class="seg" id="replay_len">
+        <button data-sec="10">10秒</button><button data-sec="20">20秒</button><button data-sec="30">30秒</button><button data-sec="45">45秒</button><button data-sec="60">60秒</button>
+      </span>
+    </div>
 
     <h3>カメラ・その他</h3>
     <div class="row">
@@ -227,6 +262,7 @@
       <tr><td>PageUp / PageDown</td><td>5秒戻す / 進める</td></tr>
       <tr><td>S</td><td>スロー再生 0.5× の切替</td></tr>
       <tr><td>L</td><td>設定した遅延秒数に復帰して再生</td></tr>
+      <tr><td>I</td><td>インスタントリプレイ（直近の映像を見返す。長さは設定で変更）</td></tr>
       <tr><td>P</td><td>骨格表示の ON/OFF</td></tr>
       <tr><td>M</td><td>左右反転（鏡）</td></tr>
       <tr><td>R</td><td>表示を90°回転（縦置きディスプレイ用）</td></tr>
@@ -252,7 +288,38 @@
   </div>
 </div>
 
+<!-- インスタントリプレイ -->
+<div id="replay" hidden>
+  <div class="rp">
+    <div class="rp-head">
+      <span class="title">⟲ インスタントリプレイ</span>
+      <span id="rp_info"></span>
+      <span id="rp_time" class="rp-time"></span>
+      <button class="close" data-rp="close" title="閉じる (Esc)">×</button>
+    </div>
+    <canvas id="rp_canvas" title="クリックで再生 / 一時停止"></canvas>
+    <input type="range" id="rp_seek" class="rp-seek" min="0" max="1000" step="1" value="0">
+    <div class="rp-bar">
+      <button data-rp="start" title="先頭へ (Home)">|◀◀</button>
+      <button data-rp="back" title="2秒戻す (PageUp / Shift+←)">◀◀ 2s</button>
+      <button data-rp="step-" title="1コマ戻す (←)">|◀</button>
+      <button data-rp="toggle" id="rp_play" class="play" title="再生 / 一時停止 (Space)">⏸</button>
+      <button data-rp="step+" title="1コマ進む (→)">▶|</button>
+      <button data-rp="fwd" title="2秒進める (PageDown / Shift+→)">2s ▶▶</button>
+      <span class="sep"></span>
+      <span class="seg" id="rp_speed" title="再生速度 (S で切替)">
+        <button data-rp="speed" data-v="1">1×</button><button data-rp="speed" data-v="0.5">0.5×</button><button data-rp="speed" data-v="0.25">0.25×</button>
+      </span>
+      <button data-rp="loop" id="rp_loop" title="ループ再生 (O)">ループ</button>
+      <button data-rp="pose" id="rp_pose" title="骨格表示 (P)">骨格</button>
+      <span class="sep"></span>
+      <button data-rp="close" class="back" title="遅延再生に戻る (Esc / I)。遅延再生は裏で受信を続けているので、戻ると同じ位置から再開します">遅延再生に戻る</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/pose_overlay.js"></script>
+<script src="/static/replay.js"></script>
 <script src="/static/view.js"></script>
 </body>
 </html>

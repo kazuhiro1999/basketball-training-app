@@ -53,7 +53,10 @@ let serverVersion = '';
 let analyzerStatus = null;           // 骨格推定プロセスの状態 (サーバ経由)
 let lastFrameSession = null;         // 表示中フレームのセッション id (骨格の照合用)
 let lastFrameBase = null;            // 表示中フレームの base (実際の遅延の計算用)
-let filling = false;                 // 設定遅延ぶんのバッファがまだ無く、少し遅めに再生して追いついている最中
+let filling = false;
+let liveSuspended = false;           // インスタントリプレイ表示中: 受信と再生位置は進めるが復号・描画はしない
+let replaySeconds = 30;              // インスタントリプレイの長さ (設定で変更)
+try { replaySeconds = +JSON.parse(localStorage.getItem('delaycam.replay') || '{}').seconds || 30; } catch { /* ignore */ }                 // 設定遅延ぶんのバッファがまだ無く、少し遅めに再生して追いついている最中
 const stats = { rxFrames: 0, rxBytes: 0, decoded: 0, prevRx: 0, prevRxBytes: 0, prevDecoded: 0, rxFps: 0, rxMbps: 0, decFps: 0 };
 
 try {
@@ -225,7 +228,7 @@ function tick() {
 
   let n = 0;
   while (playIdx < buffer.length && buffer[playIdx].base <= pos && n < 120) {
-    processItem(buffer[playIdx]);
+    if (!liveSuspended) processItem(buffer[playIdx]);   // リプレイ中は位置だけ進める (戻る時に seek で合わせる)
     playIdx++; n++;
   }
   trim(now);
@@ -326,6 +329,7 @@ const actions = {
   quit: () => { ui.quit.hidden = false; },
   rec: () => { openRecCard(); },
   settings: () => { updatePoseCard(); ui.settings.hidden = !ui.settings.hidden; },
+  replay: () => openReplay(),
   pose: () => {
     const on = PoseOverlay.toggle();
     updatePoseCard(); drawFrame();
@@ -366,7 +370,7 @@ function runAction(act, source) {
 const keymap = {
   ArrowUp: 'delay+', ArrowDown: 'delay-', '+': 'delay+', '-': 'delay-', ' ': 'pause',
   ArrowLeft: 'step-', ArrowRight: 'step+', PageUp: 'back', PageDown: 'fwd',
-  s: 'slow', l: 'live', m: 'mirror', r: 'rotate', q: 'qr', h: 'help', f: 'fs', p: 'pose', ',': 'settings',
+  s: 'slow', l: 'live', m: 'mirror', r: 'rotate', q: 'qr', h: 'help', f: 'fs', p: 'pose', ',': 'settings', i: 'replay',
 };
 
 function anyOverlayOpen() {
@@ -394,6 +398,7 @@ async function doQuit() {
 
 window.addEventListener('keydown', (e) => {
   if (quitting) return;
+  if (InstantReplay.isOpen()) { InstantReplay.onKey(e); return; }   // リプレイ中のキーはすべてプレイヤーへ
   if (e.key === 'Escape') {
     e.preventDefault();
     if (anyOverlayOpen()) closeOverlays();     // まず開いているカードを閉じる
@@ -583,8 +588,12 @@ window.addEventListener('resize', resize);
 
 function drawFrame() {
   if (!lastFrame) return;
-  const cw = canvas.width, ch = canvas.height;
-  const fw = lastFrame.displayWidth, fh = lastFrame.displayHeight;
+  renderFrame(ctx, canvas.width, canvas.height, lastFrame, lastFrameSession);
+}
+
+// フレームを鏡・回転・骨格込みで描く。インスタントリプレイも同じ描き方を使う
+function renderFrame(ctx, cw, ch, frame, sessionId) {
+  const fw = frame.displayWidth, fh = frame.displayHeight;
   const swap = rotation % 180 !== 0;                 // 90/270° なら縦横が入れ替わる
   const bw = swap ? fh : fw, bh = swap ? fw : fh;
   const s = Math.min(cw / bw, ch / bh);
@@ -593,13 +602,71 @@ function drawFrame() {
   ctx.translate(cw / 2, ch / 2);
   if (mirror) ctx.scale(-1, 1);                      // 画面上での左右反転 (回転より外側に掛ける)
   ctx.rotate(rotation * Math.PI / 180);
-  ctx.drawImage(lastFrame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
+  ctx.drawImage(frame, -fw * s / 2, -fh * s / 2, fw * s, fh * s);
   // 骨格: フレームのピクセル座標で描けるように同じ変換の上に載せる (鏡・回転もそのまま効く)
   ctx.translate(-fw * s / 2, -fh * s / 2);
   ctx.scale(s, s);
-  PoseOverlay.draw(ctx, lastFrameSession, lastFrame.timestamp, s);
+  PoseOverlay.draw(ctx, sessionId, frame.timestamp, s);
   ctx.restore();
 }
+
+// ---------------------------------------------------------------- インスタントリプレイ
+
+// 受信済みの最新チャンクから遡って seconds 秒ぶんを切り出す。遅延表示にまだ出ていない最新部分も含む。
+// 同じセッションの連続した区間だけを使い、先頭はキーフレームに揃える (そこから復号できるように)
+function buildReplayClip(seconds) {
+  let end = buffer.length - 1;
+  while (end >= 0 && buffer[end].kind !== 'chunk') end--;
+  if (end < 0) return null;
+  const sess = buffer[end].sess;
+  let runStart = end;
+  while (runStart > 0 && buffer[runStart - 1].kind === 'chunk' && buffer[runStart - 1].sess === sess) runStart--;
+  const startTs = buffer[end].ts - seconds * 1e6;
+  let a = runStart;
+  while (a < end && buffer[a].ts < startTs) a++;
+  let k = a;
+  while (k > runStart && !buffer[k].key) k--;          // 直前のキーフレームまで戻る
+  if (!buffer[k].key) { while (k < end && !buffer[k].key) k++; }   // 無ければ直後のキーフレームから
+  if (!buffer[k].key) return null;
+  const items = [];
+  for (let i = k; i <= end; i++) items.push({ ts: buffer[i].ts, key: buffer[i].key, data: buffer[i].data });
+  return { items, decoderConfig: sess.decoderConfig, sessionId: sess.id, capturedAt: Date.now() };
+}
+
+function openReplay() {
+  const clip = buildReplayClip(replaySeconds);
+  if (!clip || clip.items.length < 2) { toast('まだ映像がありません'); return; }
+  closeOverlays();
+  liveSuspended = true;
+  const ok = InstantReplay.open(clip, {
+    render: renderFrame,
+    onClose: closeReplay,
+    onAction: (a) => sendEvent('replay_' + a),
+  });
+  if (!ok) { liveSuspended = false; return; }
+  const got = (clip.items[clip.items.length - 1].ts - clip.items[0].ts) / 1e6;
+  sendEvent('replay_open', { seconds: replaySeconds, clip_sec: Math.round(got * 10) / 10 });
+  if (got < replaySeconds - 1.5) toast(`まだ ${got.toFixed(0)} 秒ぶんしか映像がありません`, 2500);
+}
+
+function closeReplay() {
+  liveSuspended = false;
+  seek(pos);                                          // 裏で進んでいた位置のフレームを復号し直して表示を戻す
+  drawFrame();
+  sendEvent('replay_close');
+}
+
+function setReplaySeconds(v) {
+  replaySeconds = v;
+  try { localStorage.setItem('delaycam.replay', JSON.stringify({ seconds: v })); } catch { /* ignore */ }
+  for (const b of document.querySelectorAll('#replay_len button')) b.classList.toggle('on', +b.dataset.sec === v);
+  const rb = document.getElementById('replaybtn');
+  if (rb) rb.title = `インスタントリプレイ: 直近 ${v} 秒を見返す (I)`;
+}
+document.getElementById('replay_len').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (b) setReplaySeconds(+b.dataset.sec);
+});
+setReplaySeconds(replaySeconds);
 
 // 骨格が表示フレームに追いつくまでの秒数 (起動直後は遅延ぶんだけ待つ)
 function poseWait() {

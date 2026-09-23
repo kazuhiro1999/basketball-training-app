@@ -46,7 +46,7 @@ import qrcode
 import qrcode.image.svg
 from aiohttp import WSMsgType, web
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
 CERT_DIR = BASE / "certs"

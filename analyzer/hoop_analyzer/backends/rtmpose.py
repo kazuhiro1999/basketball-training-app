@@ -9,7 +9,18 @@ import numpy as np
 
 from ..ort_config import retune_rtmlib
 from ..types import Person
-from .base import PoseBackend, bbox_from_keypoints
+from .base import PoseBackend
+
+
+TORSO = [5, 6, 11, 12]    # 両肩・両腰 (COCO-17)
+
+
+def _torso_anchor(kp: np.ndarray, sc: np.ndarray, thr: float) -> np.ndarray | None:
+    idx = [i for i in TORSO if sc[i] > thr]
+    if len(idx) >= 2:
+        return kp[idx].mean(axis=0)
+    good = sc > thr
+    return kp[good].mean(axis=0) if good.sum() >= 3 else None
 
 
 class RTMPoseBackend(PoseBackend):
@@ -28,6 +39,7 @@ class RTMPoseBackend(PoseBackend):
         self.det_every = max(1, det_every)
         self._since_det = 10**9
         self._last_boxes: np.ndarray | None = None
+        self._offsets: np.ndarray | None = None   # 検出枠の中心 - 胴体中心 (人ごと)
         from rtmlib import RTMPose, YOLOX
         from rtmlib.tools.solution.body import Body
 
@@ -79,10 +91,33 @@ class RTMPoseBackend(PoseBackend):
                 kp_scores=np.asarray(sc, dtype=np.float32),
             ))
         if self.det_every > 1 and persons:
-            # 次のフレームで使い回す枠は、今回の骨格から作り直す (人が動いてもついていく)
-            self._last_boxes = np.array([bbox_from_keypoints(p.keypoints, p.kp_scores, self.kp_thr, pad=0.25)
-                                         for p in persons], dtype=np.float32)
+            self._carry_boxes(persons, detected=not reused)
         return persons
+
+    def _carry_boxes(self, persons: list[Person], detected: bool) -> None:
+        """次のフレームで使い回す枠を用意する。
+        枠の大きさは直前の検出のまま固定し、位置だけ胴体 (肩・腰の平均) に合わせて動かす。
+        以前は骨格の外接矩形から作り直していたが、検出枠と大きさが違うため 1 推論ごとに枠が伸び縮みし、
+        それに合わせて切り出しが変わって関節が揺れ、トラッカーの ID も切れていた。"""
+        boxes = np.array([p.bbox for p in persons], dtype=np.float32)
+        centers = np.column_stack([(boxes[:, 0] + boxes[:, 2]) / 2, (boxes[:, 1] + boxes[:, 3]) / 2])
+        anchors = [_torso_anchor(p.keypoints, p.kp_scores, self.kp_thr) for p in persons]
+        if detected or self._offsets is None or len(self._offsets) != len(persons):
+            self._offsets = np.array([c - a if a is not None else np.zeros(2, np.float32)
+                                      for c, a in zip(centers, anchors)], dtype=np.float32)
+            self._last_boxes = boxes
+            return
+        new = boxes.copy()
+        for i, a in enumerate(anchors):
+            if a is None:
+                continue                                  # 胴体が見えない時は枠をそのまま
+            half = (boxes[i, 2:] - boxes[i, :2]) / 2
+            c = a + self._offsets[i]
+            new[i] = [c[0] - half[0], c[1] - half[1], c[0] + half[0], c[1] + half[1]]
+            # 出力する枠も今回の骨格の位置に合わせる。入力に使った (1 回前の) 枠のままだと、
+            # トラッカーから見た位置が「止まる → 検出時に 2 回分跳ぶ」になって ID が切れる
+            persons[i].bbox = new[i].copy()
+        self._last_boxes = new
 
     def describe(self) -> dict:
         d = super().describe()

@@ -34,12 +34,13 @@ from .tracking import create_tracker
 CHUNK_HDR = struct.Struct("<BBHdI")   # version, flags(bit0=key), reserved, ts_us, duration_us
 
 # 重い ← → 軽い。rtmpose を軸にしたのは、one-stage (rtmo/yolo) が小さく写る人を落としやすいため。
-# det_every: 人検出は姿勢推定より重いので、ライブでは数回に 1 回だけ検出して間は枠を使い回す。
-# 括弧内はノート PC (i7-14650HX, 768x576, 4-6人) での定常実測値
+# det_every: 人検出を N 回に 1 回にして間は枠を使い回す。人数が少ないほど効く (検出の比率が大きい) が、
+# 人が交差・急に遠ざかる時に ID が切れやすくなるので「軽い」だけで使う。
+# 括弧内はノート PC (i7-14650HX, 他の負荷なし, 768x576, 4-6人) での定常実測値
 PRESETS = {
-    "heavy": {"pose": "rtmpose", "size": "m", "max_persons": 6, "det_every": 2},    # 約 1.7 回/秒
-    "medium": {"pose": "rtmpose", "size": "s", "max_persons": 6, "det_every": 3},   # 約 5.5 回/秒
-    "light": {"pose": "rtmpose", "size": "s", "max_persons": 2, "det_every": 4},    # 約 11 回/秒
+    "heavy": {"pose": "rtmpose", "size": "m", "max_persons": 6, "det_every": 1},    # 330 ms, 約 3 回/秒
+    "medium": {"pose": "rtmpose", "size": "s", "max_persons": 6, "det_every": 1},   # 90 ms, 約 11 回/秒
+    "light": {"pose": "rtmpose", "size": "s", "max_persons": 2, "det_every": 3},    # 35 ms, 約 28 回/秒
 }
 
 
